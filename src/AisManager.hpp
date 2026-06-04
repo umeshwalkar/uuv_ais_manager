@@ -1,48 +1,66 @@
 #pragma once
 #include <memory>
 #include <vector>
+#include <map>
 #include <thread>
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
 #include <string>
 #include "Config.hpp"
+#include "Transport.hpp"
 #include "MqttClient.hpp"
 #include "AisDevice.hpp"
 
 /**
- * AisManager — coordinates one or more AisDevice instances (AIS1, AIS2 …).
+ * AisManager — owns the transport pool and coordinates AisDevice instances.
  *
- * Each AisDevice runs its own receive thread and, if enabled, its own GGA
- * output thread.  AisManager's publish thread merges vessel tables across all
- * devices and publishes to MQTT with device_id/device_name tags per vessel.
+ * Start-up sequence:
+ *   1. Build transport pool: one ITransport per TransportDef in ais.transport[].
+ *   2. For each enabled device, resolve its channel transports from the pool
+ *      and construct an AisDevice with ResolvedTransport pairs.
+ *   3. Start all devices (each manages its own rx / gga threads).
+ *   4. Run publishLoop (merge + MQTT publish, respects publish_enabled per device).
  *
- * GPS data flow for GGA output:
- *   MQTT gnss_gga topic → AisManager::setGga() → AisDevice::setGga() (all)
- *   → each device's ggaOutputLoop() sends $GPGGA to the transponder.
+ * Enabling rules enforced at AisManager level:
+ *   device.enabled=false      → AisDevice not created; absent from ais/status
+ *   transport.enabled=false   → ResolvedTransport.enabled=false passed to device;
+ *                               device idles, still appears in ais/status
+ *   device.publish_enabled    → controls MQTT vessel publish only (not status)
+ *
+ * GPS GGA flow:
+ *   External call to setGga() → broadcast to all devices whose gga_out is active.
  */
 class AisManager {
 public:
     explicit AisManager(const AppConfig& cfg);
     ~AisManager();
 
-    void run();    // blocks until stop()
-    void stop();   // safe to call from signal handler
+    void run();
+    void stop();
 
-    // Push latest GPS GGA sentence to all devices that have GGA output enabled.
-    // Call this whenever fresh GNSS data arrives (MQTT subscription callback etc.)
+    // Push latest $GPGGA to all devices with an enabled GGA output channel
     void setGga(const std::string& gga_sentence, double ts);
 
 private:
-    AppConfig                               cfg_;
+    AppConfig cfg_;
+
+    // Transport pool: id → ITransport (includes disabled transports so status can be reported)
+    std::map<std::string, std::unique_ptr<ITransport>> pool_;
+
     std::vector<std::unique_ptr<AisDevice>> devices_;
     std::unique_ptr<MqttClient>             mqtt_;
 
-    std::atomic<bool>           running_{false};
-    std::thread                 publish_thread_;
+    std::atomic<bool>       running_{false};
+    std::thread             publish_thread_;
+    mutable std::mutex      cv_mutex_;
+    std::condition_variable cv_;
 
-    mutable std::mutex          cv_mutex_;
-    std::condition_variable     cv_;
+    // Build pool_ from cfg_.ais.transports
+    void buildTransportPool();
+
+    // Resolve a transport id → {ptr, enabled}
+    ResolvedTransport resolveTransport(const std::string& transport_id) const;
 
     void publishLoop();
 
@@ -51,6 +69,7 @@ private:
 
     std::string formatVesselsJson(
         const std::unordered_map<uint32_t, VesselRecord>& vessels,
+        const std::vector<DeviceSnapshot>& snaps,
         double now_epoch) const;
     std::string formatStatusJson(
         const std::vector<DeviceSnapshot>& snaps,

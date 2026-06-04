@@ -11,7 +11,7 @@
 #include "Transport.hpp"
 #include "AisParser.hpp"
 
-// ── Per-vessel record held by each AisDevice ──────────────────────────────────
+// ── Per-vessel record ─────────────────────────────────────────────────────────
 
 struct VesselRecord {
     AisData     data;
@@ -20,85 +20,97 @@ struct VesselRecord {
     std::chrono::system_clock::time_point last_seen;
 };
 
-// ── Thread-safe snapshot returned by AisDevice::snapshot() ───────────────────
+// ── Resolved transport (pointer from AisManager's pool + enabled flag) ────────
+
+struct ResolvedTransport {
+    ITransport* ptr     = nullptr;   // owned by AisManager — do NOT delete
+    bool        enabled = false;     // = TransportDef.enabled && channel.enabled
+};
+
+// ── Thread-safe snapshot ──────────────────────────────────────────────────────
 
 struct DeviceSnapshot {
     int         id                = 0;
     std::string name;
+    bool        enabled           = true;    // always true for created devices
+    bool        publish_enabled   = true;
+    bool        rx_transport_enabled = false;
+    bool        tx_transport_enabled = false;
+    bool        aivdm_ch_enabled  = false;
+    bool        gga_ch_enabled    = false;
     bool        connected         = false;
     bool        is_valid          = false;
     double      last_recv_ts      = 0.0;
     uint64_t    packets_received  = 0;
     uint64_t    parse_errors      = 0;
     uint64_t    crc_errors        = 0;
-    bool        gga_output_enabled = false;
     uint64_t    gga_sent_count    = 0;
     std::unordered_map<uint32_t, VesselRecord> vessels;
 };
 
 // ── AisDevice ─────────────────────────────────────────────────────────────────
 /**
- * Manages one physical AIS sensor.  Owns the transport, runs a receive thread
- * that parses !AIVDM/!AIVDO sentences, and maintains a per-MMSI vessel table.
+ * Manages one physical AIS sensor.
  *
- * If cfg.gga_output.enabled is true, a second thread periodically sends the
- * latest $GPGGA sentence back to the same transport so the transponder can
- * broadcast its own-vessel position (AIVDO).  The latest GGA is pushed in by
- * AisManager via setGga() whenever fresh GPS data arrives.
+ * Constructed by AisManager which resolves transport pool entries and passes
+ * raw ResolvedTransport pointers.  AisDevice does NOT own the transport
+ * objects; AisManager does.
+ *
+ * Threads started by start():
+ *   rx_thread_  — connects rx transport, reads/parses !AIVDM/!AIVDO
+ *   gga_thread_ — (if gga_out.enabled && tx resolved) sends $GPGGA periodically
+ *
+ * Enabling/disabling logic:
+ *   rx_.enabled == false  → rx_thread_ idles, no connect attempt, connected=false
+ *   aivdm_ch disabled     → rx transport connects (may be needed for tx), lines discarded
+ *   tx_.enabled == false  → gga_thread_ not started at all
+ *   gga_ch disabled       → gga_thread_ not started at all
  */
 class AisDevice {
 public:
-    AisDevice(const AisDeviceConfig& cfg, bool validate_crc);
+    AisDevice(const AisDeviceConfig& cfg,
+              const ResolvedTransport& rx,
+              const ResolvedTransport& tx);
     ~AisDevice();
 
     void start();
     void stop();
 
+    // Thread-safe snapshot for publish/status
     DeviceSnapshot snapshot() const;
 
-    // Called by AisManager to push latest GPS GGA sentence to this device
+    // Push latest GPS GGA sentence; used by the GGA output thread
     void setGga(const std::string& gga_sentence, double ts);
 
-    int                id()      const { return cfg_.id;      }
-    const std::string& name()    const { return cfg_.name;    }
-    bool               enabled() const { return cfg_.enabled; }
+    int                id()             const { return cfg_.id;             }
+    const std::string& name()           const { return cfg_.name;           }
+    bool               publishEnabled() const { return cfg_.publish_enabled;}
 
 private:
-    AisDeviceConfig             cfg_;
-    bool                        validate_crc_;
-    std::unique_ptr<ITransport> transport_;
-    AisParser                   parser_;
+    AisDeviceConfig     cfg_;
+    ResolvedTransport   rx_;    // aivdm input transport
+    ResolvedTransport   tx_;    // gga output transport (may == rx_)
+    AisParser           parser_;
 
-    // State protected by mtx_
-    mutable std::mutex          mtx_;
-    DeviceSnapshot              state_;
+    mutable std::mutex  mtx_;
+    DeviceSnapshot      state_;
 
-    // Shared stop signal + wake-up
-    std::atomic<bool>           running_{false};
-    mutable std::mutex          cv_mutex_;
-    std::condition_variable     cv_;
+    std::atomic<bool>   running_{false};
+    mutable std::mutex  cv_mutex_;
+    std::condition_variable cv_;
 
-    // Receive thread
-    std::thread                 rx_thread_;
+    std::thread         rx_thread_;
+    std::thread         gga_thread_;
 
-    // GGA output thread (only started when gga_output.enabled)
-    std::thread                 gga_thread_;
+    mutable std::mutex  gga_mutex_;
+    std::string         last_gga_;
+    double              last_gga_ts_ = 0.0;
 
-    // Latest GGA sentence (written by setGga, read by gga output loop)
-    mutable std::mutex          gga_mutex_;
-    std::string                 last_gga_;
-    double                      last_gga_ts_ = 0.0;
-
-    // Receive loop internals
     void rxLoop();
+    void ggaOutputLoop();
     void sendInitCommands();
     void processLine(const std::string& line, double ts);
     void updateVessel(const AisData& d, double ts);
-
-    // GGA output loop
-    void ggaOutputLoop();
-
-    // Build $GPGGA sentence from the stored last_gga_ and send it
     bool sendGgaToDevice();
 
     static double epochNow();

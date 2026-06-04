@@ -3,10 +3,15 @@
 #include <vector>
 #include <stdexcept>
 
-// ── Transport ─────────────────────────────────────────────────────────────────
+// ── Named transport definition (pool entry) ───────────────────────────────────
+// Each entry has a unique string id.  Channels reference these by id via
+// shared_with.  If enabled=false the transport is never opened; any channel
+// referencing it is implicitly disabled, but the device still reports status.
 
-struct TransportConfig {
-    std::string type               = "tcp_client"; // udp_server|tcp_client|tcp_server|serial
+struct TransportDef {
+    std::string id;
+    bool        enabled            = true;
+    std::string type               = "tcp_client"; // tcp_client|tcp_server|udp_server|serial
     std::string bind_host          = "0.0.0.0";
     int         bind_port          = 0;
     std::string host;
@@ -15,12 +20,19 @@ struct TransportConfig {
     int         serial_baud        = 9600;
     int         serial_data_bits   = 8;
     int         serial_stop_bits   = 1;
-    std::string serial_parity      = "N";          // N=None E=Even O=Odd
+    std::string serial_parity      = "N";
     int         connect_timeout_sec  = 5;
     int         reconnect_delay_sec  = 3;
     int         read_timeout_ms      = 1000;
     int         buffer_size_bytes    = 1024;
-    std::string shared_with;                       // reuse named device's transport
+};
+
+// ── Channel transport reference ───────────────────────────────────────────────
+// A thin reference used inside input_channels / output_channels to point at
+// one entry in the transport pool by its id.
+
+struct ChannelTransportRef {
+    std::string shared_with;     // must match a TransportDef.id
 };
 
 // ── MQTT ──────────────────────────────────────────────────────────────────────
@@ -28,7 +40,7 @@ struct TransportConfig {
 struct MqttTopics {
     std::string ais      = "uuv/ais";
     std::string status   = "ais/status";
-    std::string gnss_gga = "uuv/gnss/gga";        // subscribe: incoming GPS feed
+    std::string gnss_gga = "uuv/gnss/gga";  // subscribe: incoming GPS feed
 };
 
 struct MqttConfig {
@@ -42,49 +54,55 @@ struct MqttConfig {
     MqttTopics  topics;
 };
 
-// ── GGA output channel ────────────────────────────────────────────────────────
-// Each AIS device can have its own GGA output channel.  When enabled, the
-// device receives the current GPS GGA position (pushed by AisManager from the
-// gnss_gga MQTT topic) and periodically writes a $GPGGA sentence back to the
-// physical transponder so it can broadcast its own-vessel position (AIVDO).
-//
-// transport.shared_with: set to the parent device's own name (e.g. "ais1") to
-// reuse the same bidirectional TCP/serial connection for the output.
-// Leave empty to use the device's own transport by default.
+// ── Channel configs ───────────────────────────────────────────────────────────
 
-struct GgaOutputConfig {
-    bool        enabled          = false;
-    int         send_interval_ms = 1000;
-    double      data_timeout_sec = 2.0;
-    TransportConfig transport;                     // shared_with → same device transport
+// input_channels.aivdm — receives !AIVDM / !AIVDO sentences from the device
+struct AivdmChannelConfig {
+    bool             enabled          = true;
+    double           data_timeout_sec = 5.0;
+    ChannelTransportRef transport;
 };
 
-// ── AIS device ────────────────────────────────────────────────────────────────
-// Each entry represents one physical AIS sensor (AIS1, AIS2 …).
+// output_channels.gga — sends $GPGGA to the device (own-vessel position)
+struct GgaChannelConfig {
+    bool             enabled          = false;
+    int              send_interval_ms = 1000;
+    double           data_timeout_sec = 2.0;
+    ChannelTransportRef transport;
+};
+
+// ── AIS device config ─────────────────────────────────────────────────────────
+//
+// enabled=false          → skip ALL operations for this device (not in status)
+// enabled=true           → device is managed:
+//   transport disabled   → channels disabled, device IS in ais/status (connected=false)
+//   publish_enabled=true → vessels published to uuv/ais MQTT topic
+//   publish_enabled=false→ transport/parsing still runs; NO uuv/ais publish;
+//                          device IS still in ais/status
 
 struct AisDeviceConfig {
     int         id                    = 1;
     std::string name                  = "ais1";
     bool        enabled               = true;
-    double      data_timeout_sec      = 5.0;
     double      sync_timeout_sec      = 5.0;
     bool        send_init_on_reconnect = false;
     std::vector<std::string> init_commands;
-    TransportConfig  transport;
-    GgaOutputConfig  gga_output;                   // per-device GPS output channel
+
+    bool        publish_enabled       = true;   // controls uuv/ais MQTT publish only
+    bool        publish_raw_ais       = false;
+    int         publish_interval_ms   = 1000;
+    bool        validate_checksum     = true;
+
+    AivdmChannelConfig  aivdm_in;   // input_channels.aivdm
+    GgaChannelConfig    gga_out;    // output_channels.gga
 };
 
-// ── AIS application ───────────────────────────────────────────────────────────
+// ── AIS application config ────────────────────────────────────────────────────
 
 struct AisConfig {
-    int         publish_interval_ms    = 1000;
-    double      data_timeout_sec       = 5.0;
-    int         status_interval_sec    = 10;
-    bool        publish_raw_ais        = false;
-    bool        validate_crc           = true;
-    bool        require_position_valid = false;
-
-    std::vector<AisDeviceConfig> devices;          // AIS1, AIS2, …
+    int status_interval_sec = 10;
+    std::vector<TransportDef>    transports;   // named transport pool
+    std::vector<AisDeviceConfig> devices;
 };
 
 // ── Top-level ─────────────────────────────────────────────────────────────────
