@@ -1,0 +1,82 @@
+{
+  "mqtt": {
+    "enabled": true,
+    "broker": "host.docker.internal",
+    "port": 1883,
+    "client_id": "ais_manager",
+    "keepalive": 60,
+    "qos": 1,
+    "retain": false,
+    "topics": {
+      "ais":      "uuv/ais",
+      "status":   "ais/status",
+      "gnss_gga": "uuv/gnss/gga"
+    }
+  },
+  "ais": {
+    "publish_interval_ms":    1000,
+    "data_timeout_sec":       5.0,
+    "status_interval_sec":    10,
+    "publish_raw_ais":        false,
+    "validate_crc":           true,
+    "require_position_valid": false,
+    "devices": [
+      {
+        "id":                     1,
+        "name":                   "ais1",
+        "enabled":                true,
+        "data_timeout_sec":       5.0,
+        "sync_timeout_sec":       5.0,
+        "send_init_on_reconnect": false,
+        "init_commands":          [],
+        "transport": {
+          "type":                "tcp_client",
+          "host":                "host.docker.internal",
+          "port":                4008,
+          "connect_timeout_sec": 5,
+          "reconnect_delay_sec": 3,
+          "read_timeout_ms":     1000,
+          "buffer_size_bytes":   1024
+        },
+        "output_channels": {
+          "gga": {
+            "enabled":          false,
+            "send_interval_ms": 1000,
+            "data_timeout_sec": 2.0,
+            "transport": {
+              "shared_with": "ais1"
+            }
+          }
+        }
+      },
+      {
+        "id":                     2,
+        "name":                   "ais2",
+        "enabled":                true,
+        "data_timeout_sec":       5.0,
+        "sync_timeout_sec":       5.0,
+        "send_init_on_reconnect": false,
+        "init_commands":          [],
+        "transport": {
+          "type":                "tcp_client",
+          "host":                "host.docker.internal",
+          "port":                4009,
+          "connect_timeout_sec": 5,
+          "reconnect_delay_sec": 3,
+          "read_timeout_ms":     1000,
+          "buffer_size_bytes":   1024
+        },
+        "output_channels": {
+          "gga": {
+            "enabled":          false,
+            "send_interval_ms": 1000,
+            "data_timeout_sec": 2.0,
+            "transport": {
+              "shared_with": "ais2"
+            }
+          }
+        }
+      }
+    ]
+  }
+}
