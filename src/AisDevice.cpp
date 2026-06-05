@@ -1,5 +1,4 @@
 #include "AisDevice.hpp"
-#include <iostream>
 #include <iomanip>
 #include <sstream>
 #include <chrono>
@@ -20,7 +19,10 @@ double AisDevice::epochNow() {
 AisDevice::AisDevice(const AisDeviceConfig& cfg,
                      const ResolvedTransport& rx,
                      const ResolvedTransport& tx)
-    : cfg_(cfg), rx_(rx), tx_(tx)
+    : cfg_(cfg), rx_(rx), tx_(tx),
+      mod_(cfg.name),
+      last_data_time_(std::chrono::steady_clock::now()),
+      last_data_warn_time_(std::chrono::steady_clock::now())
 {
     state_.id                  = cfg_.id;
     state_.name                = cfg_.name;
@@ -29,6 +31,14 @@ AisDevice::AisDevice(const AisDeviceConfig& cfg,
     state_.tx_transport_enabled = tx_.enabled;
     state_.aivdm_ch_enabled    = cfg_.aivdm_in.enabled && rx_.enabled;
     state_.gga_ch_enabled      = cfg_.gga_out.enabled  && tx_.enabled;
+
+    LOG_INF(mod_.c_str(),
+            "Created  id=%d  rx_transport=%s[%s]  gga_out=%s  publish=%s",
+            cfg_.id,
+            cfg_.aivdm_in.transport.shared_with.c_str(),
+            rx_.enabled ? "enabled" : "DISABLED",
+            cfg_.gga_out.enabled  ? "enabled" : "off",
+            cfg_.publish_enabled  ? "yes" : "no");
 }
 
 AisDevice::~AisDevice() { stop(); }
@@ -39,9 +49,15 @@ void AisDevice::start() {
     running_   = true;
     rx_thread_ = std::thread(&AisDevice::rxLoop, this);
 
-    // Start GGA output only if both the channel and transport are enabled
-    if (cfg_.gga_out.enabled && tx_.enabled && tx_.ptr)
+    if (cfg_.gga_out.enabled && tx_.enabled && tx_.ptr) {
         gga_thread_ = std::thread(&AisDevice::ggaOutputLoop, this);
+        LOG_INF(mod_.c_str(), "GGA output thread started (interval=%dms  transport=%s)",
+                cfg_.gga_out.send_interval_ms,
+                cfg_.gga_out.transport.shared_with.c_str());
+    } else if (cfg_.gga_out.enabled && !tx_.enabled) {
+        LOG_WRN(mod_.c_str(), "GGA output channel enabled but transport '%s' is DISABLED",
+                cfg_.gga_out.transport.shared_with.c_str());
+    }
 }
 
 void AisDevice::stop() {
@@ -49,7 +65,6 @@ void AisDevice::stop() {
     cv_.notify_all();
     if (rx_thread_.joinable())  rx_thread_.join();
     if (gga_thread_.joinable()) gga_thread_.join();
-    // Close rx transport (tx may be the same ptr — only close once)
     if (rx_.ptr && rx_.ptr->isOpen()) rx_.ptr->close();
     if (tx_.ptr && tx_.ptr != rx_.ptr && tx_.ptr->isOpen()) tx_.ptr->close();
 }
@@ -73,13 +88,14 @@ void AisDevice::setGga(const std::string& gga_sentence, double ts) {
 
 void AisDevice::sendInitCommands() {
     if (cfg_.init_commands.empty() || !rx_.ptr) return;
-    std::cout << "[" << cfg_.name << "] Sending " << cfg_.init_commands.size()
-              << " init command(s)\n";
+
+    LOG_INF(mod_.c_str(), "Sending %zu init command(s)", cfg_.init_commands.size());
     for (const auto& cmd : cfg_.init_commands) {
-        if (rx_.ptr->send(cmd + "\r\n"))
-            std::cout << "  [" << cfg_.name << " cmd] " << cmd << "  OK\n";
-        else
-            std::cerr << "  [" << cfg_.name << " cmd] " << cmd << "  FAILED\n";
+        if (rx_.ptr->send(cmd + "\r\n")) {
+            LOG_INF(mod_.c_str(), "Init cmd sent: %s", cmd.c_str());
+        } else {
+            LOG_ERR(mod_.c_str(), "Init cmd FAILED: %s", cmd.c_str());
+        }
         std::unique_lock<std::mutex> lk(cv_mutex_);
         cv_.wait_for(lk, std::chrono::milliseconds(150),
                      [this] { return !running_.load(); });
@@ -90,89 +106,143 @@ void AisDevice::sendInitCommands() {
 // ── receive loop ──────────────────────────────────────────────────────────────
 
 void AisDevice::rxLoop() {
-    std::cout << "[" << cfg_.name << "] RX loop started";
+    const char* mod = mod_.c_str();
 
-    // Transport disabled — idle and report disconnected in status
+    // Transport disabled — idle; status will report connected=false
     if (!rx_.enabled || !rx_.ptr) {
-        std::cout << " (transport DISABLED — idling)\n";
+        LOG_WRN(mod, "RX transport '%s' DISABLED — idling (status will show disconnected)",
+                cfg_.aivdm_in.transport.shared_with.c_str());
         while (running_) {
             std::unique_lock<std::mutex> lk(cv_mutex_);
-            cv_.wait_for(lk, std::chrono::seconds(1),
+            cv_.wait_for(lk, std::chrono::seconds(5),
                          [this] { return !running_.load(); });
         }
-        std::cout << "[" << cfg_.name << "] RX loop stopped (transport disabled)\n";
+        LOG_INF(mod, "RX loop exited (transport was disabled)");
         return;
     }
 
-    std::cout << " (transport=" << cfg_.aivdm_in.transport.shared_with << ")\n";
+    if (!cfg_.aivdm_in.enabled) {
+        LOG_WRN(mod, "input_channels.aivdm DISABLED — transport will connect but lines discarded");
+    }
 
-    const int reconnect_s = rx_.ptr ? 3 : 0;
+    LOG_INF(mod, "RX loop started  transport='%s'  crc_check=%s  ch_debug=%s",
+            cfg_.aivdm_in.transport.shared_with.c_str(),
+            cfg_.validate_checksum ? "on" : "off",
+            cfg_.aivdm_in.debug   ? "on" : "off");
+
+    const int reconnect_s = 3;
     const int timeout_ms  = 1000;
     bool init_sent = false;
 
     while (running_) {
+        // ── Connect ───────────────────────────────────────────────────────────
         if (!rx_.ptr->isOpen()) {
-            std::cout << "[" << cfg_.name << "] Connecting...\n";
+            LOG_INF(mod, "Connecting to transport '%s'...",
+                    cfg_.aivdm_in.transport.shared_with.c_str());
             if (!rx_.ptr->open()) {
-                std::cerr << "[" << cfg_.name
-                          << "] Connect failed — retrying in " << reconnect_s << "s\n";
+                LOG_ERR(mod, "Connect FAILED — retrying in %ds", reconnect_s);
                 std::unique_lock<std::mutex> lk(cv_mutex_);
                 cv_.wait_for(lk, std::chrono::seconds(reconnect_s),
                              [this] { return !running_.load(); });
                 continue;
             }
-            std::cout << "[" << cfg_.name << "] Connected\n";
+            LOG_INF(mod, "Connected to transport '%s'",
+                    cfg_.aivdm_in.transport.shared_with.c_str());
+            last_data_time_     = std::chrono::steady_clock::now();
+            last_data_warn_time_= std::chrono::steady_clock::now();
             if (cfg_.send_init_on_reconnect) init_sent = false;
         }
 
         if (!init_sent) { sendInitCommands(); init_sent = true; }
         if (!running_) break;
 
+        // ── Read line ─────────────────────────────────────────────────────────
         std::string line = rx_.ptr->readLine(timeout_ms);
+
         if (line.empty()) {
-            if (!rx_.ptr->isOpen())
-                std::cerr << "[" << cfg_.name << "] Connection lost\n";
+            if (!rx_.ptr->isOpen()) {
+                LOG_WRN(mod, "Connection lost on transport '%s'",
+                        cfg_.aivdm_in.transport.shared_with.c_str());
+            }
+
+            // Data-timeout warning (rate-limited to once per data_timeout_sec)
+            if (state_.packets_received > 0) {
+                auto now = std::chrono::steady_clock::now();
+                double age = std::chrono::duration<double>(now - last_data_time_).count();
+                double warn_period = cfg_.aivdm_in.data_timeout_sec;
+                if (age > warn_period &&
+                    std::chrono::duration<double>(now - last_data_warn_time_).count() > warn_period) {
+                    LOG_WRN(mod, "No data for %.1fs (timeout=%.1fs) — check transponder",
+                            age, warn_period);
+                    last_data_warn_time_ = now;
+                }
+            }
             continue;
         }
 
-        if (line[0] != '!') continue;  // ignore non-AIS lines
+        // Debug: raw received line
+        if (cfg_.aivdm_in.debug) {
+            LOG_DBG(mod, "RX raw (%zu bytes): %s", line.size(), line.c_str());
+        }
+
+        if (line[0] != '!') {
+            LOG_DBG(mod, "Skipping non-AIS line: %.60s", line.c_str());
+            continue;
+        }
 
         double ts = epochNow();
+        last_data_time_ = std::chrono::steady_clock::now();
+
         {
             std::lock_guard<std::mutex> lk(mtx_);
             state_.packets_received++;
         }
 
-        // CRC validation
+        // ── CRC check ─────────────────────────────────────────────────────────
         if (cfg_.validate_checksum && !AisParser::validateChecksum(line)) {
             std::lock_guard<std::mutex> lk(mtx_);
             state_.crc_errors++;
-            std::cerr << "[" << cfg_.name << "] CRC error: " << line << "\n";
+            LOG_ERR(mod, "CRC error on packet #%llu: %s",
+                    (unsigned long long)state_.packets_received, line.c_str());
             continue;
         }
 
-        // If aivdm input channel is disabled: receive + count but don't parse
+        // Channel disabled: count but discard
         if (!cfg_.aivdm_in.enabled) continue;
 
         processLine(line, ts);
     }
 
-    std::cout << "[" << cfg_.name << "] RX loop stopped\n";
+    LOG_INF(mod, "RX loop stopped  packets=%llu  crc_errors=%llu",
+            (unsigned long long)state_.packets_received,
+            (unsigned long long)state_.crc_errors);
 }
 
 void AisDevice::processLine(const std::string& line, double ts) {
     auto result = parser_.parse(line, false, ts);
-    if (!result) return;
+    if (!result) return;   // incomplete fragment — not an error
 
     const AisData& d = *result;
-    std::cout << "[" << cfg_.name << "] MMSI=" << d.mmsi
-              << " type=" << d.msg_type;
-    if (!std::isnan(d.lat))
-        std::cout << std::fixed << std::setprecision(5)
-                  << " lat=" << d.lat << " lon=" << d.lon;
-    if (d.sog > 0.0) std::cout << " sog=" << d.sog << "kn";
-    if (!d.vessel_name.empty()) std::cout << " name=" << d.vessel_name;
-    std::cout << "\n";
+
+    LOG_INF(mod_.c_str(), "MMSI=%-9u type=%2d%s%s%s",
+            d.mmsi, d.msg_type,
+            (!std::isnan(d.lat) ? " pos=ok" : ""),
+            (d.sog > 0.0 ? " sog=ok" : ""),
+            (!d.vessel_name.empty() ? " name=ok" : ""));
+
+    if (cfg_.aivdm_in.debug) {
+        if (!std::isnan(d.lat)) {
+            LOG_DBG(mod_.c_str(),
+                    "  MMSI=%u lat=%.5f lon=%.5f sog=%.1fkn cog=%.1f hdg=%d nav=%d",
+                    d.mmsi, d.lat, d.lon, d.sog, d.cog, d.heading, d.nav_status);
+        }
+        if (!d.vessel_name.empty()) {
+            LOG_DBG(mod_.c_str(),
+                    "  MMSI=%u name='%s' callsign='%s' type=%d imo=%u",
+                    d.mmsi, d.vessel_name.c_str(), d.call_sign.c_str(),
+                    d.ship_type, d.imo);
+        }
+    }
 
     updateVessel(d, ts);
 }
@@ -216,10 +286,13 @@ void AisDevice::updateVessel(const AisData& d, double ts) {
 // ── GGA output loop ───────────────────────────────────────────────────────────
 
 void AisDevice::ggaOutputLoop() {
-    const auto interval = std::chrono::milliseconds(cfg_.gga_out.send_interval_ms);
-    std::cout << "[" << cfg_.name << "] GGA output loop started"
-              << " (transport=" << cfg_.gga_out.transport.shared_with
-              << " interval=" << cfg_.gga_out.send_interval_ms << "ms)\n";
+    const char* mod     = mod_.c_str();
+    const auto  interval = std::chrono::milliseconds(cfg_.gga_out.send_interval_ms);
+
+    LOG_INF(mod, "GGA output loop started  transport='%s'  interval=%dms  debug=%s",
+            cfg_.gga_out.transport.shared_with.c_str(),
+            cfg_.gga_out.send_interval_ms,
+            cfg_.gga_out.debug ? "on" : "off");
 
     while (running_) {
         {
@@ -227,15 +300,21 @@ void AisDevice::ggaOutputLoop() {
             cv_.wait_for(lk, interval, [this] { return !running_.load(); });
         }
         if (!running_) break;
-        if (!tx_.ptr || !tx_.ptr->isOpen()) continue;
+
+        if (!tx_.ptr || !tx_.ptr->isOpen()) {
+            LOG_DBG(mod, "GGA output: TX transport not open — skipping");
+            continue;
+        }
 
         sendGgaToDevice();
     }
 
-    std::cout << "[" << cfg_.name << "] GGA output loop stopped\n";
+    LOG_INF(mod, "GGA output loop stopped  gga_sent=%llu",
+            (unsigned long long)state_.gga_sent_count);
 }
 
 bool AisDevice::sendGgaToDevice() {
+    const char* mod = mod_.c_str();
     std::string gga;
     double gga_ts;
     {
@@ -244,18 +323,21 @@ bool AisDevice::sendGgaToDevice() {
         gga_ts = last_gga_ts_;
     }
 
-    if (gga.empty()) return false;
-
-    double age = epochNow() - gga_ts;
-    if (age > cfg_.gga_out.data_timeout_sec) {
-        std::cerr << "[" << cfg_.name << "] GGA stale ("
-                  << std::fixed << std::setprecision(1) << age << "s) — skipping\n";
+    if (gga.empty()) {
+        LOG_DBG(mod, "GGA output: no GGA data available yet");
         return false;
     }
 
-    // Send the raw $GPGGA sentence directly to the transponder
+    double age = epochNow() - gga_ts;
+    if (age > cfg_.gga_out.data_timeout_sec) {
+        LOG_WRN(mod, "GGA output: GPS data stale (%.1fs > %.1fs) — not sent",
+                age, cfg_.gga_out.data_timeout_sec);
+        return false;
+    }
+
     if (!tx_.ptr->send(gga + "\r\n")) {
-        std::cerr << "[" << cfg_.name << "] GGA send failed\n";
+        LOG_ERR(mod, "GGA output: send FAILED on transport '%s'",
+                cfg_.gga_out.transport.shared_with.c_str());
         return false;
     }
 
@@ -263,6 +345,9 @@ bool AisDevice::sendGgaToDevice() {
         std::lock_guard<std::mutex> lk(mtx_);
         state_.gga_sent_count++;
     }
-    std::cout << "[" << cfg_.name << "] GGA→device: " << gga << "\n";
+
+    if (cfg_.gga_out.debug) {
+        LOG_DBG(mod, "GGA TX (%zu bytes): %s", gga.size(), gga.c_str());
+    }
     return true;
 }

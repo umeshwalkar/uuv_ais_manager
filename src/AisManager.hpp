@@ -11,6 +11,7 @@
 #include "Transport.hpp"
 #include "MqttClient.hpp"
 #include "AisDevice.hpp"
+#include "Logger.hpp"
 
 /**
  * AisManager — owns the transport pool and coordinates AisDevice instances.

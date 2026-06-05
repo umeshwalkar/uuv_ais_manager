@@ -25,6 +25,7 @@ pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
 set(SOURCES
     src/main.cpp
     src/Config.cpp
+    src/Logger.cpp
     src/Transport.cpp
     src/MqttClient.cpp
     src/AisDevice.cpp

@@ -10,6 +10,7 @@
 #include "Config.hpp"
 #include "Transport.hpp"
 #include "AisParser.hpp"
+#include "Logger.hpp"
 
 // ── Per-vessel record ─────────────────────────────────────────────────────────
 
@@ -105,6 +106,13 @@ private:
     mutable std::mutex  gga_mutex_;
     std::string         last_gga_;
     double              last_gga_ts_ = 0.0;
+
+    // Logger module tag (device name, ≤14 chars)
+    std::string         mod_;
+
+    // Rate-limited data-timeout warning
+    std::chrono::steady_clock::time_point last_data_time_;
+    std::chrono::steady_clock::time_point last_data_warn_time_;
 
     void rxLoop();
     void ggaOutputLoop();

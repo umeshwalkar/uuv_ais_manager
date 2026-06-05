@@ -3,6 +3,13 @@
 #include <vector>
 #include <stdexcept>
 
+// ── Debug / logging configuration ────────────────────────────────────────────
+
+struct DebugConfig {
+    bool        enabled = false;  // master INFO/DEBUG switch
+    std::string level   = "warn"; // debug | info | warn | error
+};
+
 // ── Named transport definition (pool entry) ───────────────────────────────────
 // Each entry has a unique string id.  Channels reference these by id via
 // shared_with.  If enabled=false the transport is never opened; any channel
@@ -59,6 +66,7 @@ struct MqttConfig {
 // input_channels.aivdm — receives !AIVDM / !AIVDO sentences from the device
 struct AivdmChannelConfig {
     bool             enabled          = true;
+    bool             debug            = false; // log each received sentence payload
     double           data_timeout_sec = 5.0;
     ChannelTransportRef transport;
 };
@@ -66,6 +74,7 @@ struct AivdmChannelConfig {
 // output_channels.gga — sends $GPGGA to the device (own-vessel position)
 struct GgaChannelConfig {
     bool             enabled          = false;
+    bool             debug            = false; // log each transmitted GGA sentence
     int              send_interval_ms = 1000;
     double           data_timeout_sec = 2.0;
     ChannelTransportRef transport;
@@ -108,8 +117,9 @@ struct AisConfig {
 // ── Top-level ─────────────────────────────────────────────────────────────────
 
 struct AppConfig {
-    MqttConfig mqtt;
-    AisConfig  ais;
+    DebugConfig debug;
+    MqttConfig  mqtt;
+    AisConfig   ais;
 
     static AppConfig fromFile(const std::string& path);
     static AppConfig fromJsonFile(const std::string& path);

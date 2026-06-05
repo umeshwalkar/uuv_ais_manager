@@ -57,6 +57,7 @@ static AisDeviceConfig parseDevice(const json& d, int default_id) {
         if (ic.contains("aivdm")) {
             auto& a = ic["aivdm"];
             if (a.contains("enabled"))          dev.aivdm_in.enabled          = a["enabled"];
+            if (a.contains("debug"))            dev.aivdm_in.debug            = a["debug"];
             if (a.contains("data_timeout_sec")) dev.aivdm_in.data_timeout_sec = a["data_timeout_sec"];
             if (a.contains("transport"))        dev.aivdm_in.transport        = parseRef(a["transport"]);
         }
@@ -67,6 +68,7 @@ static AisDeviceConfig parseDevice(const json& d, int default_id) {
         if (oc.contains("gga")) {
             auto& g = oc["gga"];
             if (g.contains("enabled"))          dev.gga_out.enabled          = g["enabled"];
+            if (g.contains("debug"))            dev.gga_out.debug            = g["debug"];
             if (g.contains("send_interval_ms")) dev.gga_out.send_interval_ms = g["send_interval_ms"];
             if (g.contains("data_timeout_sec")) dev.gga_out.data_timeout_sec = g["data_timeout_sec"];
             if (g.contains("transport"))        dev.gga_out.transport        = parseRef(g["transport"]);
@@ -88,6 +90,12 @@ AppConfig AppConfig::fromJsonFile(const std::string& path) {
     }
 
     AppConfig cfg;
+
+    if (j.contains("debug")) {
+        auto& d = j["debug"];
+        if (d.contains("enabled")) cfg.debug.enabled = d["enabled"];
+        if (d.contains("level"))   cfg.debug.level   = d["level"];
+    }
 
     if (j.contains("mqtt")) {
         auto& m = j["mqtt"];
@@ -177,6 +185,10 @@ AppConfig AppConfig::fromIniFile(const std::string& path) {
     auto getB = [&](const std::string& s, const std::string& k, bool d) {
         auto v = get(s,k); return v.empty() ? d : (v=="true"||v=="1"); };
 
+    // Debug
+    cfg.debug.enabled = getB("debug","enabled", cfg.debug.enabled);
+    cfg.debug.level   = get ("debug","level",   cfg.debug.level);
+
     // MQTT
     cfg.mqtt.enabled   = getB("mqtt","enabled",   cfg.mqtt.enabled);
     cfg.mqtt.broker    = get ("mqtt","broker",    cfg.mqtt.broker);
@@ -239,12 +251,14 @@ AppConfig AppConfig::fromIniFile(const std::string& path) {
         // input_channels.aivdm
         std::string ain = sec + ".input.aivdm";
         dev.aivdm_in.enabled          = getB(ain,"enabled",          true);
+        dev.aivdm_in.debug            = getB(ain,"debug",            false);
         dev.aivdm_in.data_timeout_sec = getD(ain,"data_timeout_sec", 5.0);
         dev.aivdm_in.transport.shared_with = get(ain,"shared_with",  "");
 
         // output_channels.gga
         std::string gout = sec + ".output.gga";
         dev.gga_out.enabled          = getB(gout,"enabled",          false);
+        dev.gga_out.debug            = getB(gout,"debug",            false);
         dev.gga_out.send_interval_ms = getI(gout,"send_interval_ms", 1000);
         dev.gga_out.data_timeout_sec = getD(gout,"data_timeout_sec", 2.0);
         dev.gga_out.transport.shared_with = get(gout,"shared_with",  "");

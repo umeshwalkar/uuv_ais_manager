@@ -1,12 +1,13 @@
 #include "AisManager.hpp"
-#include <iostream>
-#include <iomanip>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
+
+#define MOD "AisManager"
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -31,8 +32,8 @@ static TransportConfig toTransportConfig(const TransportDef& d) {
 }
 
 // Build one vessel JSON object
-static json vesselJson(const VesselRecord& rec, double age, int dev_id,
-                       const std::string& dev_name, bool publish_raw) {
+static json vesselJson(const VesselRecord& rec, double age,
+                       int dev_id, const std::string& dev_name, bool publish_raw) {
     json v;
     v["mmsi"]        = rec.data.mmsi;
     v["device_id"]   = dev_id;
@@ -61,13 +62,15 @@ AisManager::AisManager(const AppConfig& cfg) : cfg_(cfg) {
 
     for (const auto& dcfg : cfg_.ais.devices) {
         if (!dcfg.enabled) {
-            std::cout << "[AisManager] Device '" << dcfg.name
-                      << "' disabled — skipping\n";
+            LOG_INF(MOD, "Device '%s' (id=%d) disabled — skipping", dcfg.name.c_str(), dcfg.id);
             continue;
         }
 
         ResolvedTransport rx = resolveTransport(dcfg.aivdm_in.transport.shared_with);
-        if (!dcfg.aivdm_in.enabled) rx.enabled = false;
+        if (!dcfg.aivdm_in.enabled) {
+            LOG_INF(MOD, "Device '%s': aivdm input channel disabled", dcfg.name.c_str());
+            rx.enabled = false;
+        }
 
         ResolvedTransport tx = resolveTransport(dcfg.gga_out.transport.shared_with);
         if (!dcfg.gga_out.enabled) tx.enabled = false;
@@ -82,15 +85,23 @@ AisManager::AisManager(const AppConfig& cfg) : cfg_(cfg) {
 AisManager::~AisManager() { stop(); }
 
 void AisManager::buildTransportPool() {
-    std::cout << "[AisManager] Transport pool ("
-              << cfg_.ais.transports.size() << " entries):\n";
+    LOG_INF(MOD, "Transport pool — %zu entries", cfg_.ais.transports.size());
     for (const auto& td : cfg_.ais.transports) {
-        pool_[td.id] = makeTransport(toTransportConfig(td));
-        std::cout << "  [" << td.id << "] type=" << td.type;
-        if (td.type == "tcp_client")     std::cout << " " << td.host << ":" << td.port;
-        else if (td.type == "serial")    std::cout << " " << td.serial_port << "@" << td.serial_baud;
-        else                             std::cout << " " << td.bind_host << ":" << td.bind_port;
-        std::cout << (td.enabled ? "" : "  [DISABLED]") << "\n";
+        try {
+            pool_[td.id] = makeTransport(toTransportConfig(td));
+            if (td.enabled) {
+                LOG_INF(MOD, "  [%s] type=%s %s%s",
+                        td.id.c_str(), td.type.c_str(),
+                        td.type == "tcp_client"  ? (td.host + ":" + std::to_string(td.port)).c_str() :
+                        td.type == "serial"      ? td.serial_port.c_str() :
+                        (td.bind_host + ":" + std::to_string(td.bind_port)).c_str(), "");
+            } else {
+                LOG_WRN(MOD, "  [%s] type=%s  DISABLED", td.id.c_str(), td.type.c_str());
+            }
+        } catch (const std::exception& e) {
+            LOG_ERR(MOD, "Transport '%s' creation failed: %s", td.id.c_str(), e.what());
+            throw;
+        }
     }
 }
 
@@ -98,12 +109,14 @@ ResolvedTransport AisManager::resolveTransport(const std::string& id) const {
     if (id.empty()) return {nullptr, false};
     auto it = pool_.find(id);
     if (it == pool_.end()) {
-        std::cerr << "[AisManager] WARNING: transport '" << id << "' not in pool\n";
+        LOG_WRN(MOD, "Transport '%s' not found in pool — channel will be disabled", id.c_str());
         return {nullptr, false};
     }
     bool enabled = false;
     for (const auto& td : cfg_.ais.transports)
         if (td.id == id) { enabled = td.enabled; break; }
+    if (!enabled)
+        LOG_WRN(MOD, "Transport '%s' is disabled — dependent channel will be disabled", id.c_str());
     return {it->second.get(), enabled};
 }
 
@@ -113,129 +126,66 @@ void AisManager::run() {
     if (running_) return;
     running_ = true;
 
-    std::cout << "[AisManager] Starting — " << devices_.size()
-              << " active device(s)\n";
+    LOG_INF(MOD, "Starting — %zu active device(s)  status_interval=%ds",
+            devices_.size(), cfg_.ais.status_interval_sec);
+
     for (const auto& dcfg : cfg_.ais.devices) {
-        std::string st = dcfg.enabled ? "enabled" : "DISABLED";
-        std::cout << "  [" << dcfg.name << "] id=" << dcfg.id << " " << st;
-        if (dcfg.enabled)
-            std::cout << " publish=" << (dcfg.publish_enabled ? "yes" : "no")
-                      << " aivdm=" << (dcfg.aivdm_in.enabled
-                                       ? dcfg.aivdm_in.transport.shared_with : "off")
-                      << " gga="   << (dcfg.gga_out.enabled
-                                       ? dcfg.gga_out.transport.shared_with : "off");
-        std::cout << "\n";
+        if (!dcfg.enabled) {
+            LOG_INF(MOD, "  [%s] id=%d  DISABLED", dcfg.name.c_str(), dcfg.id);
+            continue;
+        }
+        LOG_INF(MOD, "  [%s] id=%d  publish=%s(%dms)  aivdm='%s'  gga='%s'",
+                dcfg.name.c_str(), dcfg.id,
+                dcfg.publish_enabled ? "yes" : "no",
+                dcfg.publish_interval_ms,
+                dcfg.aivdm_in.enabled ? dcfg.aivdm_in.transport.shared_with.c_str() : "off",
+                dcfg.gga_out.enabled  ? dcfg.gga_out.transport.shared_with.c_str()  : "off");
     }
 
-    if (mqtt_ && !mqtt_->connect())
-        std::cerr << "[AisManager] WARNING: MQTT connect failed\n";
+    if (mqtt_) {
+        if (!mqtt_->connect()) {
+            LOG_WRN(MOD, "MQTT connect failed to %s:%d — will retry on publish",
+                    cfg_.mqtt.broker.c_str(), cfg_.mqtt.port);
+        } else {
+            LOG_INF(MOD, "MQTT connected to %s:%d  client='%s'",
+                    cfg_.mqtt.broker.c_str(), cfg_.mqtt.port,
+                    cfg_.mqtt.client_id.c_str());
+        }
+    } else {
+        LOG_WRN(MOD, "MQTT disabled — no vessel data will be published");
+    }
 
     for (auto& dev : devices_) dev->start();
 
+    LOG_INF(MOD, "publishLoop starting");
     publish_thread_ = std::thread(&AisManager::publishLoop, this);
     if (publish_thread_.joinable()) publish_thread_.join();
 
-    std::cout << "[AisManager] Stopped\n";
+    LOG_INF(MOD, "All threads stopped");
 }
 
 void AisManager::stop() {
     running_ = false;
     cv_.notify_all();
     for (auto& dev : devices_) dev->stop();
+    LOG_INF(MOD, "Stop requested");
 }
 
 void AisManager::setGga(const std::string& gga_sentence, double ts) {
+    int fed = 0;
     for (auto& dev : devices_) {
         for (const auto& dcfg : cfg_.ais.devices)
-            if (dcfg.id == dev->id() && dcfg.enabled && dcfg.gga_out.enabled)
+            if (dcfg.id == dev->id() && dcfg.enabled && dcfg.gga_out.enabled) {
                 dev->setGga(gga_sentence, ts);
-    }
-}
-
-// ── publish loop ──────────────────────────────────────────────────────────────
-
-void AisManager::publishLoop() {
-    std::cout << "[AisManager::publishLoop] Started\n";
-
-    // Per-device next-publish timestamps (each has its own publish_interval_ms)
-    std::map<int, std::chrono::steady_clock::time_point> next_pub;
-    auto now_steady = std::chrono::steady_clock::now();
-    for (const auto& d : cfg_.ais.devices)
-        if (d.enabled) next_pub[d.id] = now_steady;
-
-    auto last_status = now_steady;
-    const auto status_ivl = std::chrono::seconds(cfg_.ais.status_interval_sec);
-
-    // Tick at 100 ms so we don't miss any device's interval
-    const auto tick = std::chrono::milliseconds(100);
-
-    while (running_) {
-        {
-            std::unique_lock<std::mutex> lk(cv_mutex_);
-            cv_.wait_for(lk, tick, [this] { return !running_.load(); });
-        }
-        if (!running_) break;
-
-        now_steady        = std::chrono::steady_clock::now();
-        double now_epoch  = epochNow();
-
-        // Collect snapshots from all running devices
-        std::vector<DeviceSnapshot> snaps;
-        for (const auto& dev : devices_) snaps.push_back(dev->snapshot());
-
-        // Per-device vessel publish
-        for (const auto& snap : snaps) {
-            if (!snap.publish_enabled) continue;   // transport runs, MQTT skipped
-
-            auto it = next_pub.find(snap.id);
-            if (it == next_pub.end() || now_steady < it->second) continue;
-
-            // Advance this device's next publish time
-            int pub_ms = 1000;
-            for (const auto& d : cfg_.ais.devices)
-                if (d.id == snap.id) { pub_ms = d.publish_interval_ms; break; }
-            it->second = now_steady + std::chrono::milliseconds(pub_ms);
-
-            if (!mqtt_) continue;
-
-            // Purge threshold for this device
-            double purge_after = 5.0 * 60.0;  // default 5min
-            bool   publish_raw = false;
-            for (const auto& d : cfg_.ais.devices)
-                if (d.id == snap.id) {
-                    purge_after = d.aivdm_in.data_timeout_sec * 60.0;
-                    publish_raw = d.publish_raw_ais;
-                    break;
-                }
-
-            json j;
-            j["ts"]          = now_epoch;
-            j["device_id"]   = snap.id;
-            j["device_name"] = snap.name;
-
-            json arr = json::array();
-            for (const auto& [mmsi, rec] : snap.vessels) {
-                double age = now_epoch - rec.data.recv_ts;
-                if (age > purge_after) continue;
-                arr.push_back(vesselJson(rec, age, snap.id, snap.name, publish_raw));
+                ++fed;
             }
-            j["vessels"]      = arr;
-            j["vessel_count"] = arr.size();
-            mqtt_->publish(cfg_.mqtt.topics.ais, j.dump());
-        }
-
-        // Status publish (all devices — including disabled ones)
-        if (now_steady - last_status >= status_ivl) {
-            if (mqtt_)
-                mqtt_->publish(cfg_.mqtt.topics.status, formatStatusJson(snaps, now_epoch));
-            last_status = now_steady;
-        }
     }
-
-    std::cout << "[AisManager::publishLoop] Stopped\n";
+    if (fed == 0) {
+        LOG_DBG(MOD, "setGga: no devices with gga_out enabled — GPS data dropped");
+    }
 }
 
-// ── JSON formatters ───────────────────────────────────────────────────────────
+// ── vessel merge ──────────────────────────────────────────────────────────────
 
 std::unordered_map<uint32_t, VesselRecord>
 AisManager::mergeVessels(const std::vector<DeviceSnapshot>& snaps) const {
@@ -251,14 +201,145 @@ AisManager::mergeVessels(const std::vector<DeviceSnapshot>& snaps) const {
     return merged;
 }
 
-std::string AisManager::formatVesselsJson(
-    const std::unordered_map<uint32_t, VesselRecord>& vessels,
-    const std::vector<DeviceSnapshot>& /*snaps*/,
-    double now_epoch) const
-{
-    json j; j["ts"] = now_epoch; j["vessels"] = json::array();
-    return j.dump();
+// ── publish loop ──────────────────────────────────────────────────────────────
+
+void AisManager::publishLoop() {
+    LOG_INF(MOD, "publishLoop started");
+
+    // Per-device next-publish timestamps
+    std::map<int, std::chrono::steady_clock::time_point> next_pub;
+    // Per-device stale-warning timestamps (rate-limited)
+    std::map<int, std::chrono::steady_clock::time_point> last_stale_warn;
+
+    auto now_steady = std::chrono::steady_clock::now();
+    for (const auto& d : cfg_.ais.devices)
+        if (d.enabled) {
+            next_pub[d.id]       = now_steady;
+            last_stale_warn[d.id]= now_steady - std::chrono::seconds(60);
+        }
+
+    auto last_status  = now_steady;
+    const auto status_ivl = std::chrono::seconds(cfg_.ais.status_interval_sec);
+    const auto tick       = std::chrono::milliseconds(100);
+
+    while (running_) {
+        {
+            std::unique_lock<std::mutex> lk(cv_mutex_);
+            cv_.wait_for(lk, tick, [this] { return !running_.load(); });
+        }
+        if (!running_) break;
+
+        now_steady       = std::chrono::steady_clock::now();
+        double now_epoch = epochNow();
+
+        std::vector<DeviceSnapshot> snaps;
+        for (const auto& dev : devices_) snaps.push_back(dev->snapshot());
+
+        // ── Per-device vessel publish ─────────────────────────────────────────
+        for (const auto& snap : snaps) {
+            if (!snap.publish_enabled) {
+                LOG_DBG(MOD, "Device '%s': publish_enabled=false — skipping MQTT vessel publish",
+                        snap.name.c_str());
+                continue;
+            }
+
+            auto it_pub = next_pub.find(snap.id);
+            if (it_pub == next_pub.end() || now_steady < it_pub->second) continue;
+
+            int pub_ms = 1000;
+            double purge_after = 300.0;
+            bool   publish_raw = false;
+            double data_timeout = 5.0;
+            for (const auto& d : cfg_.ais.devices)
+                if (d.id == snap.id) {
+                    pub_ms       = d.publish_interval_ms;
+                    purge_after  = d.aivdm_in.data_timeout_sec * 60.0;
+                    publish_raw  = d.publish_raw_ais;
+                    data_timeout = d.aivdm_in.data_timeout_sec;
+                    break;
+                }
+            it_pub->second = now_steady + std::chrono::milliseconds(pub_ms);
+
+            // Stale data warning (rate-limited)
+            if (snap.is_valid) {
+                double age = now_epoch - snap.last_recv_ts;
+                if (age > data_timeout) {
+                    auto& last_warn = last_stale_warn[snap.id];
+                    if (std::chrono::duration<double>(now_steady - last_warn).count()
+                        > data_timeout) {
+                        LOG_WRN(MOD, "Device '%s': data stale (%.1fs > %.1fs timeout)",
+                                snap.name.c_str(), age, data_timeout);
+                        last_warn = now_steady;
+                    }
+                }
+            }
+
+            if (!mqtt_) continue;
+
+            // Build and publish vessel JSON
+            json j;
+            j["ts"]          = now_epoch;
+            j["device_id"]   = snap.id;
+            j["device_name"] = snap.name;
+            json arr = json::array();
+            for (const auto& [mmsi, rec] : snap.vessels) {
+                double age = now_epoch - rec.data.recv_ts;
+                if (age > purge_after) continue;
+                arr.push_back(vesselJson(rec, age, snap.id, snap.name, publish_raw));
+            }
+            j["vessels"]      = arr;
+            j["vessel_count"] = arr.size();
+            std::string payload = j.dump();
+
+            bool ok = mqtt_->publish(cfg_.mqtt.topics.ais, payload);
+            if (ok) {
+                LOG_DBG(MOD, "MQTT TX [%s] dev='%s' vessels=%d  %zu bytes",
+                        cfg_.mqtt.topics.ais.c_str(), snap.name.c_str(),
+                        (int)arr.size(), payload.size());
+            } else {
+                LOG_ERR(MOD, "MQTT publish FAILED on topic '%s' for device '%s'",
+                        cfg_.mqtt.topics.ais.c_str(), snap.name.c_str());
+            }
+        }
+
+        // ── Status publish ────────────────────────────────────────────────────
+        if (now_steady - last_status >= status_ivl) {
+            if (mqtt_) {
+                std::string status = formatStatusJson(snaps, now_epoch);
+                bool ok = mqtt_->publish(cfg_.mqtt.topics.status, status);
+                if (ok) {
+                    LOG_DBG(MOD, "MQTT TX [%s]  %zu bytes",
+                            cfg_.mqtt.topics.status.c_str(), status.size());
+                } else {
+                    LOG_ERR(MOD, "MQTT publish FAILED on topic '%s'",
+                            cfg_.mqtt.topics.status.c_str());
+                }
+            }
+            last_status = now_steady;
+
+            // Periodic console status summary (INFO level)
+            for (const auto& snap : snaps) {
+                LOG_INF(MOD, "Status  dev='%s'  connected=%s  vessels=%d  "
+                        "pkts=%llu  crc_err=%llu  health=%s",
+                        snap.name.c_str(),
+                        snap.connected ? "yes" : "no",
+                        (int)snap.vessels.size(),
+                        (unsigned long long)snap.packets_received,
+                        (unsigned long long)snap.crc_errors,
+                        snap.connected && snap.is_valid ? "ok" :
+                        !snap.connected                 ? "disconnected" : "no_data");
+            }
+        }
+    }
+
+    LOG_INF(MOD, "publishLoop stopped");
 }
+
+// ── JSON formatters ───────────────────────────────────────────────────────────
+
+std::string AisManager::formatVesselsJson(
+    const std::unordered_map<uint32_t, VesselRecord>&,
+    const std::vector<DeviceSnapshot>&, double) const { return "{}"; }
 
 std::string AisManager::formatStatusJson(
     const std::vector<DeviceSnapshot>& snaps,
@@ -270,14 +351,12 @@ std::string AisManager::formatStatusJson(
     json devs = json::array();
     bool any_connected = false, any_data = false;
 
-    // Active devices (have a running AisDevice)
     for (const auto& snap : snaps) {
         double age   = snap.is_valid ? (now_epoch - snap.last_recv_ts) : -1.0;
         bool   fresh = false;
         for (const auto& d : cfg_.ais.devices)
             if (d.id == snap.id) {
-                fresh = snap.is_valid && age >= 0.0
-                        && age < d.aivdm_in.data_timeout_sec;
+                fresh = snap.is_valid && age >= 0.0 && age < d.aivdm_in.data_timeout_sec;
                 break;
             }
 
@@ -312,7 +391,7 @@ std::string AisManager::formatStatusJson(
         if (snap.is_valid)  any_data      = true;
     }
 
-    // Disabled devices still appear in status
+    // Disabled devices appear in status with minimal info
     for (const auto& dcfg : cfg_.ais.devices) {
         if (!dcfg.enabled) {
             json d;
