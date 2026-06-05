@@ -76,13 +76,103 @@ A single bidirectional TCP or serial connection therefore serves both directions
 
 | File | Purpose |
 |------|---------|
-| [src/Config.hpp](src/Config.hpp) / [.cpp](src/Config.cpp) | `TransportDef` pool, `AivdmChannelConfig`, `GgaChannelConfig`, `AisDeviceConfig`, JSON/INI loaders |
+| [src/Config.hpp](src/Config.hpp) / [.cpp](src/Config.cpp) | `DebugConfig`, `TransportDef` pool, `AivdmChannelConfig`, `GgaChannelConfig`, `AisDeviceConfig`, JSON/INI loaders |
+| [src/Logger.hpp](src/Logger.hpp) / [.cpp](src/Logger.cpp) | Tick-stamped, level-gated console logger; `LOG_ERR/WRN/INF/DBG` macros |
 | [src/AisParser.hpp](src/AisParser.hpp) | Header-only 6-bit AIS decoder; types 1/2/3, 5, 18, 21, 24; multi-part reassembly |
-| [src/AisDevice.hpp](src/AisDevice.hpp) / [.cpp](src/AisDevice.cpp) | Per-device: owns `rxLoop` + `ggaOutputLoop` threads, vessel table, `setGga()` |
-| [src/AisManager.hpp](src/AisManager.hpp) / [.cpp](src/AisManager.cpp) | Owns transport pool, creates/wires devices, runs `publishLoop` |
+| [src/AisDevice.hpp](src/AisDevice.hpp) / [.cpp](src/AisDevice.cpp) | Per-device: owns `rxLoop` + `ggaOutputLoop` threads, vessel table, `setGga()`, Logger integration |
+| [src/AisManager.hpp](src/AisManager.hpp) / [.cpp](src/AisManager.cpp) | Owns transport pool, creates/wires devices, runs `publishLoop`, Logger integration |
 | [src/Transport.hpp](src/Transport.hpp) / [.cpp](src/Transport.cpp) | `ITransport` interface + TCP client/server, UDP server, serial RS-232 |
-| [src/MqttClient.hpp](src/MqttClient.hpp) / [.cpp](src/MqttClient.cpp) | libmosquitto wrapper |
-| [src/main.cpp](src/main.cpp) | Entry point, signal handling |
+| [src/MqttClient.hpp](src/MqttClient.hpp) / [.cpp](src/MqttClient.cpp) | libmosquitto wrapper with Logger integration |
+| [src/main.cpp](src/main.cpp) | Entry point: `Logger::init()`, debug config apply, signal handling |
+
+---
+
+## Logging
+
+### Output format
+
+Every log line carries a **system tick** (milliseconds since `main()` started), a level tag, and a fixed-width module identifier:
+
+```
+[<tick_ms>] [<LVL>] [<module>       ] <message>
+
+[0000000012] [INF] [Main          ] Config: config/ais_config.json
+[0000000015] [INF] [Main          ] Debug: ON  level=debug  (ERR+WRN always shown)
+[0000000018] [INF] [AisManager    ] Transport pool — 2 entries
+[0000000019] [INF] [AisManager    ]   [ch1] type=tcp_client host.docker.internal:4008
+[0000000020] [INF] [AisManager    ]   [ch2] type=tcp_client host.docker.internal:4009
+[0000000022] [INF] [ais1          ] Created  id=1  rx_transport=ch1[enabled]  gga_out=off
+[0000000025] [INF] [MqttClient    ] Connected to host.docker.internal:1883
+[0000001340] [INF] [ais1          ] Connected to transport 'ch1'
+[0000001341] [INF] [ais2          ] Connected to transport 'ch2'
+[0000001350] [DBG] [ais1          ] RX raw (47 bytes): !AIVDM,1,1,,A,13nlh6...
+[0000001351] [INF] [ais1          ] MMSI=338123456  type= 1  pos=ok  sog=ok
+[0000001351] [DBG] [ais1          ]   MMSI=338123456 lat=18.92001 lon=72.84002 sog=12.5kn cog=220.3 hdg=219 nav=0
+[0000060000] [INF] [AisManager    ] Status  dev='ais1'  connected=yes  vessels=4  pkts=3600  crc_err=0  health=ok
+[0000062100] [WRN] [ais2          ] No data for 5.2s (timeout=5.0s) — check transponder
+[0000062100] [ERR] [ais1          ] CRC error on packet #1425: !AIVDM,1,1,,A,...
+[0000062200] [WRN] [MqttClient    ] Not connected — attempting reconnect to host.docker.internal:1883
+[0000062201] [ERR] [MqttClient    ] Reconnect FAILED: connection refused
+```
+
+### Log levels
+
+| Level | Tag | Always printed? | Typical use |
+|-------|-----|----------------|-------------|
+| `ERROR` | `[ERR]` | Yes | Hard faults: transport connect failure, CRC error, MQTT publish failure, send failure |
+| `WARN`  | `[WRN]` | Yes | Recoverable issues: connection lost, no data for N seconds, stale GPS data, MQTT reconnect, disabled transport/channel |
+| `INFO`  | `[INF]` | When `debug.enabled=true` | Lifecycle: connected/disconnected, init commands, loop start/stop, periodic status summary |
+| `DEBUG` | `[DBG]` | When `debug.enabled=true` | Payloads: raw NMEA sentences, decoded vessel fields, MQTT TX bytes, GGA TX content |
+
+`ERR` and `WRN` are **always printed**, regardless of `debug.enabled` or `debug.level`.
+
+### Per-channel payload debug
+
+Setting `debug: true` inside `input_channels.aivdm` or `output_channels.gga` enables payload-level `DBG` messages for that specific channel, independently of other devices.  The master `debug.enabled` switch must also be `true` for `DBG` messages to appear.
+
+| `debug.enabled` | channel `debug` | What prints |
+|-----------------|----------------|-------------|
+| `false` | any | ERR + WRN only |
+| `true` | `false` | ERR + WRN + INF |
+| `true` | `true` | ERR + WRN + INF + DBG (including raw payloads) |
+
+### Configuring the logger
+
+**JSON** — top-level `debug` object:
+
+```json
+"debug": {
+  "enabled": true,    // master switch for INF/DBG messages
+  "level":   "debug"  // debug | info | warn | error
+}
+```
+
+**INI** — `[debug]` section:
+
+```ini
+[debug]
+enabled = true
+level   = debug
+```
+
+**Per-channel payload logging:**
+
+```json
+"input_channels": {
+  "aivdm": { "debug": true, ... }   // log each received NMEA sentence + decoded fields
+},
+"output_channels": {
+  "gga":   { "debug": true, ... }   // log each transmitted $GPGGA sentence
+}
+```
+
+```ini
+[ais.device1.input.aivdm]
+debug = true
+
+[ais.device1.output.gga]
+debug = true
+```
 
 ---
 
@@ -126,6 +216,14 @@ Both JSON and INI formats are supported — pass the file path as the first argu
 
 ```jsonc
 {
+  // ── Debug / Logging ──────────────────────────────────────────────────────
+  // enabled=true  → INF + DBG messages printed (ERR + WRN always printed)
+  // level         → minimum level: debug | info | warn | error
+  "debug": {
+    "enabled": true,
+    "level":   "debug"
+  },
+
   "mqtt": {
     "enabled": true,
     "broker":  "host.docker.internal",
@@ -137,6 +235,7 @@ Both JSON and INI formats are supported — pass the file path as the first argu
       "gnss_gga": "uuv/gnss/gga"  // subscribed: GPS feed for GGA output
     }
   },
+
   "ais": {
     "status_interval_sec": 10,     // ais/status publish rate
 
@@ -172,19 +271,21 @@ Both JSON and INI formats are supported — pass the file path as the first argu
         "publish_enabled": true,      // false → transport runs, MQTT vessel publish skipped
         "publish_raw_ais": false,     // include raw NMEA sentence in vessel JSON
         "publish_interval_ms": 1000,  // per-device uuv/ais publish rate
-        "validate_checksum": true,    // drop sentences with bad checksum
+        "validate_checksum": true,    // drop sentences with bad NMEA checksum
         "input_channels": {
           "aivdm": {
             "enabled": true,
-            "data_timeout_sec": 5.0,  // vessel marked stale after this
+            "debug": true,            // log each received !AIVDM sentence + decoded fields
+            "data_timeout_sec": 5.0,  // vessel marked stale after this many seconds
             "transport": { "shared_with": "ch1" }
           }
         },
         "output_channels": {
           "gga": {
-            "enabled": false,          // true → send $GPGGA to transponder periodically
+            "enabled": false,         // true → send $GPGGA to transponder periodically
+            "debug": true,            // log each transmitted $GPGGA sentence
             "send_interval_ms": 1000,
-            "data_timeout_sec": 2.0,   // skip if GPS data older than this
+            "data_timeout_sec": 2.0,  // skip if GPS data older than this
             "transport": { "shared_with": "ch1" }  // same connection as aivdm
           }
         }
@@ -196,12 +297,12 @@ Both JSON and INI formats are supported — pass the file path as the first argu
         "publish_interval_ms": 1000,
         "validate_checksum": true,
         "input_channels": {
-          "aivdm": { "enabled": true, "data_timeout_sec": 5.0,
+          "aivdm": { "enabled": true, "debug": true, "data_timeout_sec": 5.0,
                      "transport": { "shared_with": "ch2" } }
         },
         "output_channels": {
-          "gga": { "enabled": false, "send_interval_ms": 1000, "data_timeout_sec": 2.0,
-                   "transport": { "shared_with": "ch2" } }
+          "gga": { "enabled": false, "debug": true, "send_interval_ms": 1000,
+                   "data_timeout_sec": 2.0, "transport": { "shared_with": "ch2" } }
         }
       }
     ]
@@ -212,6 +313,13 @@ Both JSON and INI formats are supported — pass the file path as the first argu
 ### `ais_config.ini` — annotated
 
 ```ini
+; ── Debug / Logging ────────────────────────────────────────────────────────────
+; enabled=true  → INF + DBG messages printed (ERR + WRN always printed)
+; level         → minimum level: debug | info | warn | error
+[debug]
+enabled = true
+level   = debug
+
 [mqtt]
 broker     = host.docker.internal
 port       = 1883
@@ -249,11 +357,13 @@ validate_checksum   = true
 
 [ais.device1.input.aivdm]
 enabled          = true
+debug            = true    ; log each received !AIVDM sentence + decoded fields
 data_timeout_sec = 5.0
 shared_with      = ch1
 
 [ais.device1.output.gga]
 enabled          = false
+debug            = true    ; log each transmitted $GPGGA sentence
 send_interval_ms = 1000
 data_timeout_sec = 2.0
 shared_with      = ch1
@@ -269,11 +379,13 @@ validate_checksum   = true
 
 [ais.device2.input.aivdm]
 enabled          = true
+debug            = true
 data_timeout_sec = 5.0
 shared_with      = ch2
 
 [ais.device2.output.gga]
 enabled          = false
+debug            = true
 send_interval_ms = 1000
 data_timeout_sec = 2.0
 shared_with      = ch2
@@ -533,20 +645,49 @@ The simulator:
 ./build/ais_manager config/ais_config.json
 ```
 
-Expected startup output:
+Expected startup output (`debug.enabled=true, level=debug`):
 ```
-[AisManager] Transport pool (2 entries):
-  [ch1] type=tcp_client host.docker.internal:4008
-  [ch2] type=tcp_client host.docker.internal:4009
-[AisManager] Starting — 2 active device(s)
-  [ais1] id=1 publish=yes aivdm=ch1 gga=off
-  [ais2] id=2 publish=yes aivdm=ch2 gga=off
-[ais1] RX loop started (transport=ch1)
-[ais2] RX loop started (transport=ch2)
-[ais1] Connected
-[ais2] Connected
-[ais1] MMSI=338123456 type=1 lat=18.92001 lon=72.84002 sog=12.5kn
-[ais2] MMSI=477001234 type=1 lat=18.98002 lon=72.87001 sog=11.0kn
+╔══════════════════════════╗
+║       AIS Manager        ║
+║  Comar R220U / NMEA AIS  ║
+╚══════════════════════════╝
+
+[0000000012] [INF] [Main          ] Config: config/ais_config.json
+[0000000013] [INF] [Main          ] Debug: ON  level=debug  (ERR+WRN always shown)
+[0000000014] [INF] [Main          ] MQTT: host.docker.internal:1883  client='ais_manager'  enabled=yes
+[0000000015] [INF] [Main          ] Transport pool: 2  Devices: 2
+[0000000016] [INF] [Main          ]   transport[ch1] type=tcp_client  enabled=yes
+[0000000017] [INF] [Main          ]   transport[ch2] type=tcp_client  enabled=yes
+[0000000018] [INF] [Main          ]   device[1] 'ais1'  enabled=yes  publish=yes  aivdm_debug=on  gga_debug=on
+[0000000019] [INF] [Main          ]   device[2] 'ais2'  enabled=yes  publish=yes  aivdm_debug=on  gga_debug=on
+[0000000021] [INF] [AisManager    ] Transport pool — 2 entries
+[0000000022] [INF] [AisManager    ]   [ch1] type=tcp_client host.docker.internal:4008
+[0000000023] [INF] [AisManager    ]   [ch2] type=tcp_client host.docker.internal:4009
+[0000000025] [INF] [ais1          ] Created  id=1  rx_transport=ch1[enabled]  gga_out=off  publish=yes
+[0000000027] [INF] [ais2          ] Created  id=2  rx_transport=ch2[enabled]  gga_out=off  publish=yes
+[0000000030] [INF] [MqttClient    ] Connecting to host.docker.internal:1883  keepalive=60s
+[0000000045] [INF] [MqttClient    ] Connected to host.docker.internal:1883
+[0000000047] [INF] [AisManager    ] Starting — 2 active device(s)  status_interval=10s
+[0000000050] [INF] [ais1          ] RX loop started  transport='ch1'  crc_check=on  ch_debug=on
+[0000000051] [INF] [ais2          ] RX loop started  transport='ch2'  crc_check=on  ch_debug=on
+[0000001320] [INF] [ais1          ] Connected to transport 'ch1'
+[0000001325] [INF] [ais2          ] Connected to transport 'ch2'
+[0000001340] [DBG] [ais1          ] RX raw (47 bytes): !AIVDM,1,1,,A,13nlh60P00PD9bVMl...
+[0000001341] [INF] [ais1          ] MMSI=338123456  type= 1  pos=ok  sog=ok
+[0000001341] [DBG] [ais1          ]   MMSI=338123456 lat=18.92001 lon=72.84002 sog=12.5kn cog=220.3 hdg=219 nav=0
+[0000001345] [DBG] [ais2          ] RX raw (47 bytes): !AIVDM,1,1,,A,B3m:H300FkdP?HaP0...
+[0000001346] [INF] [ais2          ] MMSI=477001234  type= 1  pos=ok  sog=ok
+[0000010000] [INF] [AisManager    ] Status  dev='ais1'  connected=yes  vessels=4  pkts=360  crc_err=0  health=ok
+[0000010000] [INF] [AisManager    ] Status  dev='ais2'  connected=yes  vessels=4  pkts=355  crc_err=0  health=ok
+[0000010000] [DBG] [MqttClient    ] TX [ais/status]  312 bytes  qos=1
+```
+
+With `debug.enabled=false` (production), only `ERR` and `WRN` lines appear:
+```
+[0000062100] [WRN] [ais2          ] No data for 5.2s (timeout=5.0s) — check transponder
+[0000062105] [ERR] [ais1          ] CRC error on packet #1425: !AIVDM,1,1,,A,13nlh...
+[0000062200] [WRN] [MqttClient    ] Not connected — attempting reconnect to host.docker.internal:1883
+[0000062201] [ERR] [MqttClient    ] Reconnect FAILED: connection refused
 ```
 
 ### 3. Monitor MQTT
