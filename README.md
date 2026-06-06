@@ -47,16 +47,24 @@ Each enabled `AisDevice` spawns:
 
 ### Transport pool and channel `id` reference
 
-All physical connections are defined once in `ais.transport[]` and identified by a string `id` (`"ch1"`, `"ch2"`, …).  Channels reference them by setting the `id` key inside their `transport` object.
+All physical connections are defined once in `ais.transport[]`, each with a **unique string `id`** (`"ch1"`, `"ch2"`, …).  Channel `transport` objects reference pool entries by this same `id` key.
 
 ```
-ais.transport.ch1  (tcp:4008, enabled=true)
-        │
-        ├── ais1.input_channels.aivdm.transport.id = "ch1"  → RX
-        └── ais1.output_channels.gga.transport.id  = "ch1"  → TX (same TCP conn)
+ais.transport[].id = "ch1"   ← pool entry (string label, unique across the pool)
+                │
+                ├── ais.devices[0].input_channels.aivdm.transport.id = "ch1"  → RX
+                └── ais.devices[0].output_channels.gga.transport.id  = "ch1"  → TX
+                        (same bidirectional TCP/serial connection for both directions)
 ```
 
-A single bidirectional TCP or serial connection therefore serves both directions simultaneously.
+> **`id` disambiguation** — the key name `id` appears in three places with different types:
+>
+> | Location | Type | Example | Meaning |
+> |----------|------|---------|---------|
+> | `ais.transport[].id` | string | `"ch1"` | Unique label for the transport pool entry |
+> | `ais.devices[].id` | integer | `1` | Numeric device identifier (appears in `ais/status` and vessel JSON) |
+> | `input_channels.aivdm.transport.id` | string | `"ch1"` | Reference to a pool entry by its label |
+> | `output_channels.gga.transport.id` | string | `"ch1"` | Reference to a pool entry by its label |
 
 ---
 
@@ -155,22 +163,24 @@ enabled = true
 level   = debug
 ```
 
-**Per-channel payload logging:**
+**Per-channel payload logging** (`debug` key sits alongside the `id` transport reference):
 
 ```json
 "input_channels": {
-  "aivdm": { "debug": true, ... }   // log each received NMEA sentence + decoded fields
+  "aivdm": { "enabled": true, "debug": true, "transport": { "id": "ch1" } }
 },
 "output_channels": {
-  "gga":   { "debug": true, ... }   // log each transmitted $GPGGA sentence
+  "gga":   { "enabled": false, "debug": true, "transport": { "id": "ch1" } }
 }
 ```
 
 ```ini
 [ais.device1.input.aivdm]
-debug = true
+id    = ch1     ; transport pool reference
+debug = true    ; enable payload logging for this channel
 
 [ais.device1.output.gga]
+id    = ch1
 debug = true
 ```
 
@@ -277,7 +287,7 @@ Both JSON and INI formats are supported — pass the file path as the first argu
             "enabled": true,
             "debug": true,            // log each received !AIVDM sentence + decoded fields
             "data_timeout_sec": 5.0,  // vessel marked stale after this many seconds
-            "transport": { "id": "ch1" }
+            "transport": { "id": "ch1" }   // id = transport pool entry label (string)
           }
         },
         "output_channels": {
@@ -286,7 +296,7 @@ Both JSON and INI formats are supported — pass the file path as the first argu
             "debug": true,            // log each transmitted $GPGGA sentence
             "send_interval_ms": 1000,
             "data_timeout_sec": 2.0,  // skip if GPS data older than this
-            "transport": { "id": "ch1" }  // same connection as aivdm
+            "transport": { "id": "ch1" }   // same pool entry → reuses the same TCP connection
           }
         }
       },
@@ -348,7 +358,7 @@ port    = 4009
 
 ; AIS Sensor 1
 [ais.device1]
-id                  = 1
+id                  = 1       ; numeric device id (integer)
 name                = ais1
 enabled             = true
 publish_enabled     = true
@@ -359,18 +369,18 @@ validate_checksum   = true
 enabled          = true
 debug            = true    ; log each received !AIVDM sentence + decoded fields
 data_timeout_sec = 5.0
-id               = ch1
+id               = ch1     ; transport pool reference (string) — matches ais.transport.ch1
 
 [ais.device1.output.gga]
 enabled          = false
 debug            = true    ; log each transmitted $GPGGA sentence
 send_interval_ms = 1000
 data_timeout_sec = 2.0
-id               = ch1
+id               = ch1     ; transport pool reference — reuses same connection as aivdm
 
 ; AIS Sensor 2
 [ais.device2]
-id                  = 2
+id                  = 2       ; numeric device id (integer)
 name                = ais2
 enabled             = true
 publish_enabled     = true
@@ -381,14 +391,14 @@ validate_checksum   = true
 enabled          = true
 debug            = true
 data_timeout_sec = 5.0
-id               = ch2
+id               = ch2     ; transport pool reference — matches ais.transport.ch2
 
 [ais.device2.output.gga]
 enabled          = false
 debug            = true
 send_interval_ms = 1000
 data_timeout_sec = 2.0
-id               = ch2
+id               = ch2     ; transport pool reference
 ```
 
 ### Transport Types
