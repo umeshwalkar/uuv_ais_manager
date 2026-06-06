@@ -1,7 +1,7 @@
 # AIS Manager — Development Log
 
 **Project:** `D:\Study\Docker\ais_manager`
-**Session date:** 2026-06-04 / 2026-06-05
+**Session dates:** 2026-06-04 / 2026-06-05 / 2026-06-06
 **References used:** `D:\Study\Docker\gnss_manager`, `D:\Study\Docker\svp_manager`, `D:\Study\Docker\ins_manager`
 
 ---
@@ -150,6 +150,33 @@ Added tick-stamped, level-gated logging throughout all modules.
 
 ---
 
+### 6 — Channel transport key renamed: `shared_with` → `id` (2026-06-06)
+
+User updated `ais_config.json`: inside `input_channels.aivdm.transport` and `output_channels.gga.transport`, the key that references the transport pool entry was renamed from `"shared_with"` to `"id"`.
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/Config.hpp` | `ChannelTransportRef.shared_with` → `.id`; updated comments |
+| `src/Config.cpp` | `parseRef()` reads `"id"` JSON key; INI loader reads `"id"` key |
+| `src/AisDevice.cpp` | All 8 occurrences of `.transport.shared_with` → `.transport.id` |
+| `src/AisManager.cpp` | All 4 occurrences of `.transport.shared_with` → `.transport.id` |
+| `config/ais_config.ini` | `shared_with = ch1/ch2` → `id = ch1/ch2` in all channel sections |
+| `README.md` | Section heading, prose, code blocks, INI example comments all updated |
+
+**Key disambiguation added to README:**
+
+| Location | Type | Example | Meaning |
+|----------|------|---------|---------|
+| `ais.transport[].id` | string | `"ch1"` | Pool entry label |
+| `ais.devices[].id` | integer | `1` | Numeric device identifier |
+| `*.transport.id` | string | `"ch1"` | Reference to a pool entry |
+
+`suggested_ais_config.json` and `DEVELOPMENT_LOG.md` were left unchanged (reference/history files).
+
+---
+
 ## Final File Layout
 
 ```
@@ -181,7 +208,7 @@ ais_manager/
 ## Key Design Principles Applied
 
 1. **Pattern consistency** — followed `svp_manager` → `gnss_manager` → `ins_manager` patterns exactly; new code is recognisably from the same family.
-2. **Transport pool** — single definition, shared by reference (`shared_with` id); same physical TCP connection used bidirectionally.
+2. **Transport pool** — single definition, referenced by `id` key in channels; same physical TCP connection used bidirectionally.
 3. **Granular enable/disable** — transport, channel, device, and publish can each be independently disabled without stopping the others.
 4. **Per-device isolation** — each `AisDevice` owns its transport lifecycle, threads, vessel table, and logger tag; `AisManager` only coordinates.
 5. **Logger** — ERR/WRN always visible; INF/DBG gated by `debug.enabled`; per-channel `debug` flag for payload tracing without flooding unrelated output.
