@@ -45,15 +45,15 @@ Each enabled `AisDevice` spawns:
 |--------|------|
 | `publishLoop` | Ticks at 100 ms; publishes each device's vessel JSON at its own `publish_interval_ms`; publishes `ais/status` every `status_interval_sec` |
 
-### Transport pool and `shared_with`
+### Transport pool and channel `id` reference
 
-All physical connections are defined once in `ais.transport[]` and identified by a string `id` (`"ch1"`, `"ch2"`, …).  Channels reference them by id via `shared_with`.
+All physical connections are defined once in `ais.transport[]` and identified by a string `id` (`"ch1"`, `"ch2"`, …).  Channels reference them by setting the `id` key inside their `transport` object.
 
 ```
 ais.transport.ch1  (tcp:4008, enabled=true)
         │
-        ├── ais1.input_channels.aivdm.transport.shared_with = "ch1"  → RX
-        └── ais1.output_channels.gga.transport.shared_with  = "ch1"  → TX (same TCP conn)
+        ├── ais1.input_channels.aivdm.transport.id = "ch1"  → RX
+        └── ais1.output_channels.gga.transport.id  = "ch1"  → TX (same TCP conn)
 ```
 
 A single bidirectional TCP or serial connection therefore serves both directions simultaneously.
@@ -240,7 +240,7 @@ Both JSON and INI formats are supported — pass the file path as the first argu
     "status_interval_sec": 10,     // ais/status publish rate
 
     // ── Transport pool ────────────────────────────────────────────────────
-    // Named entries; each channel references one by id via shared_with.
+    // Named entries; channels reference one by its id key.
     // enabled=false → transport never opened; channels using it are disabled;
     //                 device still reports in ais/status.
     "transport": [
@@ -277,7 +277,7 @@ Both JSON and INI formats are supported — pass the file path as the first argu
             "enabled": true,
             "debug": true,            // log each received !AIVDM sentence + decoded fields
             "data_timeout_sec": 5.0,  // vessel marked stale after this many seconds
-            "transport": { "shared_with": "ch1" }
+            "transport": { "id": "ch1" }
           }
         },
         "output_channels": {
@@ -286,7 +286,7 @@ Both JSON and INI formats are supported — pass the file path as the first argu
             "debug": true,            // log each transmitted $GPGGA sentence
             "send_interval_ms": 1000,
             "data_timeout_sec": 2.0,  // skip if GPS data older than this
-            "transport": { "shared_with": "ch1" }  // same connection as aivdm
+            "transport": { "id": "ch1" }  // same connection as aivdm
           }
         }
       },
@@ -298,11 +298,11 @@ Both JSON and INI formats are supported — pass the file path as the first argu
         "validate_checksum": true,
         "input_channels": {
           "aivdm": { "enabled": true, "debug": true, "data_timeout_sec": 5.0,
-                     "transport": { "shared_with": "ch2" } }
+                     "transport": { "id": "ch2" } }
         },
         "output_channels": {
           "gga": { "enabled": false, "debug": true, "send_interval_ms": 1000,
-                   "data_timeout_sec": 2.0, "transport": { "shared_with": "ch2" } }
+                   "data_timeout_sec": 2.0, "transport": { "id": "ch2" } }
         }
       }
     ]
@@ -359,14 +359,14 @@ validate_checksum   = true
 enabled          = true
 debug            = true    ; log each received !AIVDM sentence + decoded fields
 data_timeout_sec = 5.0
-shared_with      = ch1
+id               = ch1
 
 [ais.device1.output.gga]
 enabled          = false
 debug            = true    ; log each transmitted $GPGGA sentence
 send_interval_ms = 1000
 data_timeout_sec = 2.0
-shared_with      = ch1
+id               = ch1
 
 ; AIS Sensor 2
 [ais.device2]
@@ -381,14 +381,14 @@ validate_checksum   = true
 enabled          = true
 debug            = true
 data_timeout_sec = 5.0
-shared_with      = ch2
+id               = ch2
 
 [ais.device2.output.gga]
 enabled          = false
 debug            = true
 send_interval_ms = 1000
 data_timeout_sec = 2.0
-shared_with      = ch2
+id               = ch2
 ```
 
 ### Transport Types
@@ -747,9 +747,9 @@ The Comar R220U outputs standard `!AIVDM` sentences continuously at 38400 baud o
 ],
 "devices": [
   { "id": 1, "name": "ais1", "enabled": true,
-    "input_channels": { "aivdm": { "enabled": true, "transport": { "shared_with": "com1" } } },
+    "input_channels": { "aivdm": { "enabled": true, "transport": { "id": "com1" } } },
     "output_channels": { "gga": { "enabled": true, "send_interval_ms": 1000,
-                                   "transport": { "shared_with": "com1" } } }
+                                   "transport": { "id": "com1" } } }
   }
 ]
 ```
@@ -762,8 +762,8 @@ The Comar R220U outputs standard `!AIVDM` sentences continuously at 38400 baud o
   { "id": "com2", "enabled": true, "type": "serial", "serial_port": "/dev/ttyUSB1", "serial_baud": 38400 }
 ],
 "devices": [
-  { "id": 1, "name": "ais1", "input_channels": { "aivdm": { "transport": { "shared_with": "com1" } } }, ... },
-  { "id": 2, "name": "ais2", "input_channels": { "aivdm": { "transport": { "shared_with": "com2" } } }, ... }
+  { "id": 1, "name": "ais1", "input_channels": { "aivdm": { "transport": { "id": "com1" } } }, ... },
+  { "id": 2, "name": "ais2", "input_channels": { "aivdm": { "transport": { "id": "com2" } } }, ... }
 ]
 ```
 

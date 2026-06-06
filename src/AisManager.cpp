@@ -66,13 +66,13 @@ AisManager::AisManager(const AppConfig& cfg) : cfg_(cfg) {
             continue;
         }
 
-        ResolvedTransport rx = resolveTransport(dcfg.aivdm_in.transport.shared_with);
+        ResolvedTransport rx = resolveTransport(dcfg.aivdm_in.transport.id);
         if (!dcfg.aivdm_in.enabled) {
             LOG_INF(MOD, "Device '%s': aivdm input channel disabled", dcfg.name.c_str());
             rx.enabled = false;
         }
 
-        ResolvedTransport tx = resolveTransport(dcfg.gga_out.transport.shared_with);
+        ResolvedTransport tx = resolveTransport(dcfg.gga_out.transport.id);
         if (!dcfg.gga_out.enabled) tx.enabled = false;
 
         devices_.push_back(std::make_unique<AisDevice>(dcfg, rx, tx));
@@ -138,8 +138,8 @@ void AisManager::run() {
                 dcfg.name.c_str(), dcfg.id,
                 dcfg.publish_enabled ? "yes" : "no",
                 dcfg.publish_interval_ms,
-                dcfg.aivdm_in.enabled ? dcfg.aivdm_in.transport.shared_with.c_str() : "off",
-                dcfg.gga_out.enabled  ? dcfg.gga_out.transport.shared_with.c_str()  : "off");
+                dcfg.aivdm_in.enabled ? dcfg.aivdm_in.transport.id.c_str() : "off",
+                dcfg.gga_out.enabled  ? dcfg.gga_out.transport.id.c_str()  : "off");
     }
 
     if (mqtt_) {

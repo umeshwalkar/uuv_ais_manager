@@ -11,8 +11,8 @@ struct DebugConfig {
 };
 
 // ── Named transport definition (pool entry) ───────────────────────────────────
-// Each entry has a unique string id.  Channels reference these by id via
-// shared_with.  If enabled=false the transport is never opened; any channel
+// Each entry has a unique string id.  Channels reference these by id via the
+// "id" key.  If enabled=false the transport is never opened; any channel
 // referencing it is implicitly disabled, but the device still reports status.
 
 struct TransportDef {
@@ -39,7 +39,7 @@ struct TransportDef {
 // one entry in the transport pool by its id.
 
 struct ChannelTransportRef {
-    std::string shared_with;     // must match a TransportDef.id
+    std::string id;     // must match a TransportDef.id in the transport pool
 };
 
 // ── MQTT ──────────────────────────────────────────────────────────────────────

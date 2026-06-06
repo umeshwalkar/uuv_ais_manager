@@ -35,7 +35,7 @@ AisDevice::AisDevice(const AisDeviceConfig& cfg,
     LOG_INF(mod_.c_str(),
             "Created  id=%d  rx_transport=%s[%s]  gga_out=%s  publish=%s",
             cfg_.id,
-            cfg_.aivdm_in.transport.shared_with.c_str(),
+            cfg_.aivdm_in.transport.id.c_str(),
             rx_.enabled ? "enabled" : "DISABLED",
             cfg_.gga_out.enabled  ? "enabled" : "off",
             cfg_.publish_enabled  ? "yes" : "no");
@@ -53,10 +53,10 @@ void AisDevice::start() {
         gga_thread_ = std::thread(&AisDevice::ggaOutputLoop, this);
         LOG_INF(mod_.c_str(), "GGA output thread started (interval=%dms  transport=%s)",
                 cfg_.gga_out.send_interval_ms,
-                cfg_.gga_out.transport.shared_with.c_str());
+                cfg_.gga_out.transport.id.c_str());
     } else if (cfg_.gga_out.enabled && !tx_.enabled) {
         LOG_WRN(mod_.c_str(), "GGA output channel enabled but transport '%s' is DISABLED",
-                cfg_.gga_out.transport.shared_with.c_str());
+                cfg_.gga_out.transport.id.c_str());
     }
 }
 
@@ -111,7 +111,7 @@ void AisDevice::rxLoop() {
     // Transport disabled — idle; status will report connected=false
     if (!rx_.enabled || !rx_.ptr) {
         LOG_WRN(mod, "RX transport '%s' DISABLED — idling (status will show disconnected)",
-                cfg_.aivdm_in.transport.shared_with.c_str());
+                cfg_.aivdm_in.transport.id.c_str());
         while (running_) {
             std::unique_lock<std::mutex> lk(cv_mutex_);
             cv_.wait_for(lk, std::chrono::seconds(5),
@@ -126,7 +126,7 @@ void AisDevice::rxLoop() {
     }
 
     LOG_INF(mod, "RX loop started  transport='%s'  crc_check=%s  ch_debug=%s",
-            cfg_.aivdm_in.transport.shared_with.c_str(),
+            cfg_.aivdm_in.transport.id.c_str(),
             cfg_.validate_checksum ? "on" : "off",
             cfg_.aivdm_in.debug   ? "on" : "off");
 
@@ -138,7 +138,7 @@ void AisDevice::rxLoop() {
         // ── Connect ───────────────────────────────────────────────────────────
         if (!rx_.ptr->isOpen()) {
             LOG_INF(mod, "Connecting to transport '%s'...",
-                    cfg_.aivdm_in.transport.shared_with.c_str());
+                    cfg_.aivdm_in.transport.id.c_str());
             if (!rx_.ptr->open()) {
                 LOG_ERR(mod, "Connect FAILED — retrying in %ds", reconnect_s);
                 std::unique_lock<std::mutex> lk(cv_mutex_);
@@ -147,7 +147,7 @@ void AisDevice::rxLoop() {
                 continue;
             }
             LOG_INF(mod, "Connected to transport '%s'",
-                    cfg_.aivdm_in.transport.shared_with.c_str());
+                    cfg_.aivdm_in.transport.id.c_str());
             last_data_time_     = std::chrono::steady_clock::now();
             last_data_warn_time_= std::chrono::steady_clock::now();
             if (cfg_.send_init_on_reconnect) init_sent = false;
@@ -162,7 +162,7 @@ void AisDevice::rxLoop() {
         if (line.empty()) {
             if (!rx_.ptr->isOpen()) {
                 LOG_WRN(mod, "Connection lost on transport '%s'",
-                        cfg_.aivdm_in.transport.shared_with.c_str());
+                        cfg_.aivdm_in.transport.id.c_str());
             }
 
             // Data-timeout warning (rate-limited to once per data_timeout_sec)
@@ -290,7 +290,7 @@ void AisDevice::ggaOutputLoop() {
     const auto  interval = std::chrono::milliseconds(cfg_.gga_out.send_interval_ms);
 
     LOG_INF(mod, "GGA output loop started  transport='%s'  interval=%dms  debug=%s",
-            cfg_.gga_out.transport.shared_with.c_str(),
+            cfg_.gga_out.transport.id.c_str(),
             cfg_.gga_out.send_interval_ms,
             cfg_.gga_out.debug ? "on" : "off");
 
@@ -337,7 +337,7 @@ bool AisDevice::sendGgaToDevice() {
 
     if (!tx_.ptr->send(gga + "\r\n")) {
         LOG_ERR(mod, "GGA output: send FAILED on transport '%s'",
-                cfg_.gga_out.transport.shared_with.c_str());
+                cfg_.gga_out.transport.id.c_str());
         return false;
     }
 

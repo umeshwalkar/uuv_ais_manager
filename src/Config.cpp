@@ -31,7 +31,7 @@ static TransportDef parseTransportDef(const json& t) {
 
 static ChannelTransportRef parseRef(const json& t) {
     ChannelTransportRef r;
-    if (t.contains("shared_with")) r.shared_with = t["shared_with"];
+    if (t.contains("id")) r.id = t["id"];
     return r;
 }
 
@@ -253,7 +253,7 @@ AppConfig AppConfig::fromIniFile(const std::string& path) {
         dev.aivdm_in.enabled          = getB(ain,"enabled",          true);
         dev.aivdm_in.debug            = getB(ain,"debug",            false);
         dev.aivdm_in.data_timeout_sec = getD(ain,"data_timeout_sec", 5.0);
-        dev.aivdm_in.transport.shared_with = get(ain,"shared_with",  "");
+        dev.aivdm_in.transport.id = get(ain, "id", "");
 
         // output_channels.gga
         std::string gout = sec + ".output.gga";
@@ -261,7 +261,7 @@ AppConfig AppConfig::fromIniFile(const std::string& path) {
         dev.gga_out.debug            = getB(gout,"debug",            false);
         dev.gga_out.send_interval_ms = getI(gout,"send_interval_ms", 1000);
         dev.gga_out.data_timeout_sec = getD(gout,"data_timeout_sec", 2.0);
-        dev.gga_out.transport.shared_with = get(gout,"shared_with",  "");
+        dev.gga_out.transport.id = get(gout, "id", "");
 
         cfg.ais.devices.push_back(std::move(dev));
     }

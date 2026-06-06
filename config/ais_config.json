@@ -64,7 +64,7 @@
             "enabled":          true,
             "debug":            true,
             "data_timeout_sec": 5.0,
-            "transport": { "shared_with": "ch1" }
+            "transport": { "id": "ch1" }
           }
         },
         "output_channels": {
@@ -73,7 +73,7 @@
             "debug":            true,
             "send_interval_ms": 1000,
             "data_timeout_sec": 2.0,
-            "transport": { "shared_with": "ch1" }
+            "transport": { "id": "ch1" }
           }
         }
       },
@@ -93,7 +93,7 @@
             "enabled":          true,
             "debug":            true,
             "data_timeout_sec": 5.0,
-            "transport": { "shared_with": "ch2" }
+            "transport": { "id": "ch2" }
           }
         },
         "output_channels": {
@@ -102,7 +102,7 @@
             "debug":            true,
             "send_interval_ms": 1000,
             "data_timeout_sec": 2.0,
-            "transport": { "shared_with": "ch2" }
+            "transport": { "id": "ch2" }
           }
         }
       }
