@@ -88,6 +88,35 @@ bool MqttClient::publish(const std::string& topic, const std::string& payload)
     return true;
 }
 
+void MqttClient::subscribe(const std::string& topic, int qos)
+{
+    if (!isConnected()) {
+        LOG_WRN(MOD, "Subscribe skipped — not connected: '%s'", topic.c_str());
+        return;
+    }
+    int rc = mosquitto_subscribe(mosq_, nullptr, topic.c_str(), qos);
+    if (rc != MOSQ_ERR_SUCCESS)
+        LOG_ERR(MOD, "Subscribe FAILED on '%s': %s", topic.c_str(), mosquitto_strerror(rc));
+    else
+        LOG_INF(MOD, "Subscribed to '%s'  qos=%d", topic.c_str(), qos);
+}
+
+void MqttClient::setMessageCallback(MessageCallback cb)
+{
+    msg_cb_ = std::move(cb);
+    mosquitto_message_callback_set(mosq_, onMessage);
+}
+
+void MqttClient::onMessage(struct mosquitto*, void* userdata, const struct mosquitto_message* msg)
+{
+    auto* self = static_cast<MqttClient*>(userdata);
+    if (!msg->payload || !self->msg_cb_) return;
+    self->msg_cb_(
+        std::string(msg->topic),
+        std::string(static_cast<const char*>(msg->payload), msg->payloadlen)
+    );
+}
+
 bool MqttClient::reconnect()
 {
     LOG_WRN(MOD, "Not connected — attempting reconnect to %s:%d",

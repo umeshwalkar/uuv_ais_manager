@@ -62,7 +62,8 @@ AisManager::AisManager(const AppConfig& cfg) : cfg_(cfg) {
         ResolvedTransport tx = resolveTransport(dcfg.gga_out.transport.id);
         if (!dcfg.gga_out.enabled) tx.enabled = false;
 
-        devices_.push_back(std::make_unique<AisDevice>(dcfg, rx, tx));
+        auto& dev = devices_.emplace_back(std::make_unique<AisDevice>(dcfg, rx, tx));
+        dev->setAivdmCallback([this](int id) { publishAisVessels(id); });
     }
 
     if (cfg_.mqtt.enabled)
@@ -138,6 +139,14 @@ void AisManager::run() {
                     cfg_.mqtt.broker.c_str(), cfg_.mqtt.port,
                     cfg_.mqtt.client_id.c_str());
         }
+        // Subscribe to GGA input topic and wire callback → setGga()
+        const auto* sub_gga = cfg_.mqtt.topics.findSub("gnss_gga");
+        if (sub_gga && !sub_gga->topic.empty()) {
+            mqtt_->setMessageCallback([this](const std::string& t, const std::string& p) {
+                onMqttMessage(t, p);
+            });
+            mqtt_->subscribe(sub_gga->topic, cfg_.mqtt.qos);
+        }
     } else {
         LOG_WRN(MOD, "MQTT disabled — no vessel data will be published");
     }
@@ -172,6 +181,61 @@ void AisManager::setGga(const std::string& gga_sentence, double ts) {
     }
 }
 
+void AisManager::onMqttMessage(const std::string& topic, const std::string& payload) {
+    const auto* sub_gga = cfg_.mqtt.topics.findSub("gnss_gga");
+    if (sub_gga && topic == sub_gga->topic) {
+        if (sub_gga->debug)
+            LOG_DBG(MOD, "MQTT RX [%s]  %zu bytes", topic.c_str(), payload.size());
+        setGga(payload, epochNow());
+    }
+}
+
+void AisManager::publishAisVessels(int device_id) {
+    if (!mqtt_) return;
+    const auto* pub = cfg_.mqtt.topics.findPub("ais");
+    if (!pub || pub->publish_interval_ms == 0 || pub->topic.empty()) return;
+
+    DeviceSnapshot snap;
+    bool found = false;
+    for (const auto& dev : devices_)
+        if (dev->id() == device_id) { snap = dev->snapshot(); found = true; break; }
+    if (!found || !snap.publish_enabled) return;
+
+    double purge_after = 300.0;
+    bool   publish_raw = false;
+    for (const auto& d : cfg_.ais.devices)
+        if (d.id == device_id) {
+            purge_after = d.aivdm_in.data_timeout_sec * 60.0;
+            publish_raw = d.publish_raw_ais;
+            break;
+        }
+
+    double now_epoch = epochNow();
+    json j;
+    j["ts"]          = now_epoch;
+    j["device_id"]   = snap.id;
+    j["device_name"] = snap.name;
+    json arr = json::array();
+    for (const auto& [mmsi, rec] : snap.vessels) {
+        double age = now_epoch - rec.data.recv_ts;
+        if (age > purge_after) continue;
+        arr.push_back(vesselJson(rec, age, snap.id, snap.name, publish_raw));
+    }
+    j["vessels"]      = arr;
+    j["vessel_count"] = arr.size();
+    std::string payload = j.dump();
+
+    bool ok = mqtt_->publish(pub->topic, payload);
+    if (ok) {
+        if (pub->debug)
+            LOG_DBG(MOD, "MQTT TX [%s] dev='%s' vessels=%d  %zu bytes",
+                    pub->topic.c_str(), snap.name.c_str(), (int)arr.size(), payload.size());
+    } else {
+        LOG_ERR(MOD, "MQTT publish FAILED on topic '%s' for device '%s'",
+                pub->topic.c_str(), snap.name.c_str());
+    }
+}
+
 // ── vessel merge ──────────────────────────────────────────────────────────────
 
 std::unordered_map<uint32_t, VesselRecord>
@@ -193,21 +257,18 @@ AisManager::mergeVessels(const std::vector<DeviceSnapshot>& snaps) const {
 void AisManager::publishLoop() {
     LOG_INF(MOD, "publishLoop started");
 
-    // Per-device next-publish timestamps
-    std::map<int, std::chrono::steady_clock::time_point> next_pub;
-    // Per-device stale-warning timestamps (rate-limited)
-    std::map<int, std::chrono::steady_clock::time_point> last_stale_warn;
+    auto now_steady  = std::chrono::steady_clock::now();
+    auto last_status = now_steady;
 
-    auto now_steady = std::chrono::steady_clock::now();
-    for (const auto& d : cfg_.ais.devices)
-        if (d.enabled) {
-            next_pub[d.id]       = now_steady;
-            last_stale_warn[d.id]= now_steady - std::chrono::seconds(60);
-        }
+    const auto* pub_status = cfg_.mqtt.topics.findPub("status");
+    const std::string status_topic = pub_status ? pub_status->topic : "";
+    const bool        status_dbg   = pub_status ? pub_status->debug : false;
+    const int  status_interval_ms  = pub_status ? pub_status->publish_interval_ms : 0;
 
-    auto last_status  = now_steady;
-    const auto status_ivl = std::chrono::seconds(cfg_.ais.status_interval_sec);
-    const auto tick       = std::chrono::milliseconds(100);
+    const auto status_ivl = status_interval_ms > 0
+        ? std::chrono::milliseconds(status_interval_ms)
+        : std::chrono::seconds(cfg_.ais.status_interval_sec);
+    const auto tick = std::chrono::milliseconds(100);
 
     while (running_) {
         {
@@ -222,84 +283,18 @@ void AisManager::publishLoop() {
         std::vector<DeviceSnapshot> snaps;
         for (const auto& dev : devices_) snaps.push_back(dev->snapshot());
 
-        // ── Per-device vessel publish ─────────────────────────────────────────
-        for (const auto& snap : snaps) {
-            if (!snap.publish_enabled) {
-                LOG_DBG(MOD, "Device '%s': publish_enabled=false — skipping MQTT vessel publish",
-                        snap.name.c_str());
-                continue;
-            }
-
-            auto it_pub = next_pub.find(snap.id);
-            if (it_pub == next_pub.end() || now_steady < it_pub->second) continue;
-
-            int pub_ms = 1000;
-            double purge_after = 300.0;
-            bool   publish_raw = false;
-            double data_timeout = 5.0;
-            for (const auto& d : cfg_.ais.devices)
-                if (d.id == snap.id) {
-                    pub_ms       = d.publish_interval_ms;
-                    purge_after  = d.aivdm_in.data_timeout_sec * 60.0;
-                    publish_raw  = d.publish_raw_ais;
-                    data_timeout = d.aivdm_in.data_timeout_sec;
-                    break;
-                }
-            it_pub->second = now_steady + std::chrono::milliseconds(pub_ms);
-
-            // Stale data warning (rate-limited)
-            if (snap.is_valid) {
-                double age = now_epoch - snap.last_recv_ts;
-                if (age > data_timeout) {
-                    auto& last_warn = last_stale_warn[snap.id];
-                    if (std::chrono::duration<double>(now_steady - last_warn).count()
-                        > data_timeout) {
-                        LOG_WRN(MOD, "Device '%s': data stale (%.1fs > %.1fs timeout)",
-                                snap.name.c_str(), age, data_timeout);
-                        last_warn = now_steady;
-                    }
-                }
-            }
-
-            if (!mqtt_) continue;
-
-            // Build and publish vessel JSON
-            json j;
-            j["ts"]          = now_epoch;
-            j["device_id"]   = snap.id;
-            j["device_name"] = snap.name;
-            json arr = json::array();
-            for (const auto& [mmsi, rec] : snap.vessels) {
-                double age = now_epoch - rec.data.recv_ts;
-                if (age > purge_after) continue;
-                arr.push_back(vesselJson(rec, age, snap.id, snap.name, publish_raw));
-            }
-            j["vessels"]      = arr;
-            j["vessel_count"] = arr.size();
-            std::string payload = j.dump();
-
-            bool ok = mqtt_->publish(cfg_.mqtt.topics.ais, payload);
-            if (ok) {
-                LOG_DBG(MOD, "MQTT TX [%s] dev='%s' vessels=%d  %zu bytes",
-                        cfg_.mqtt.topics.ais.c_str(), snap.name.c_str(),
-                        (int)arr.size(), payload.size());
-            } else {
-                LOG_ERR(MOD, "MQTT publish FAILED on topic '%s' for device '%s'",
-                        cfg_.mqtt.topics.ais.c_str(), snap.name.c_str());
-            }
-        }
-
         // ── Status publish ────────────────────────────────────────────────────
-        if (now_steady - last_status >= status_ivl) {
-            if (mqtt_) {
+        if (status_interval_ms > 0 && now_steady - last_status >= status_ivl) {
+            if (mqtt_ && !status_topic.empty()) {
                 std::string status = formatStatusJson(snaps, now_epoch);
-                bool ok = mqtt_->publish(cfg_.mqtt.topics.status, status);
+                bool ok = mqtt_->publish(status_topic, status);
                 if (ok) {
-                    LOG_DBG(MOD, "MQTT TX [%s]  %zu bytes",
-                            cfg_.mqtt.topics.status.c_str(), status.size());
+                    if (status_dbg)
+                        LOG_DBG(MOD, "MQTT TX [%s]  %zu bytes",
+                                status_topic.c_str(), status.size());
                 } else {
                     LOG_ERR(MOD, "MQTT publish FAILED on topic '%s'",
-                            cfg_.mqtt.topics.status.c_str());
+                            status_topic.c_str());
                 }
             }
             last_status = now_steady;

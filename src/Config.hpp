@@ -42,12 +42,27 @@ struct ChannelTransportRef {
     std::string id;     // must match a TransportDef.id in the transport pool
 };
 
-// ── MQTT ──────────────────────────────────────────────────────────────────────
+// ── MQTT per-topic entries ────────────────────────────────────────────────────
+
+struct MqttPubTopic {
+    std::string name;
+    std::string topic;
+    bool        debug               = false;
+    int         publish_interval_ms = 1000;
+};
+
+struct MqttSubTopic {
+    std::string name;
+    std::string topic;
+    bool        debug = false;
+};
 
 struct MqttTopics {
-    std::string ais      = "uuv/ais";
-    std::string status   = "ais/status";
-    std::string gnss_gga = "uuv/gnss/gga";  // subscribe: incoming GPS feed
+    std::vector<MqttPubTopic> pub;
+    std::vector<MqttSubTopic> sub;
+
+    const MqttPubTopic* findPub(const std::string& name) const;
+    const MqttSubTopic* findSub(const std::string& name) const;
 };
 
 struct MqttConfig {

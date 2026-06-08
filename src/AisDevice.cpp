@@ -84,6 +84,10 @@ void AisDevice::setGga(const std::string& gga_sentence, double ts) {
     last_gga_ts_ = ts;
 }
 
+void AisDevice::setAivdmCallback(AivdmCallback cb) {
+    aivdm_cb_ = std::move(cb);
+}
+
 // ── init commands ─────────────────────────────────────────────────────────────
 
 void AisDevice::sendInitCommands() {
@@ -180,15 +184,15 @@ void AisDevice::rxLoop() {
             continue;
         }
 
-        // Debug: raw received line
-        if (cfg_.aivdm_in.debug) {
-            LOG_DBG(mod, "RX raw (%zu bytes): %s", line.size(), line.c_str());
-        }
-
-        if (line[0] != '!') {
-            LOG_DBG(mod, "Skipping non-AIS line: %.60s", line.c_str());
+        // Only !AIVDM sentences are processed; everything else is discarded
+        if (line.size() < 7 || line.compare(0, 7, "!AIVDM,") != 0) {
+            if (cfg_.aivdm_in.debug)
+                LOG_DBG(mod, "Ignoring non-AIVDM line: %.60s", line.c_str());
             continue;
         }
+
+        if (cfg_.aivdm_in.debug)
+            LOG_DBG(mod, "RX !AIVDM (%zu bytes): %s", line.size(), line.c_str());
 
         double ts = epochNow();
         last_data_time_ = std::chrono::steady_clock::now();
@@ -245,6 +249,9 @@ void AisDevice::processLine(const std::string& line, double ts) {
     }
 
     updateVessel(d, ts);
+
+    // Notify manager to publish immediately — complete !AIVDM message assembled
+    if (aivdm_cb_) aivdm_cb_(cfg_.id);
 }
 
 void AisDevice::updateVessel(const AisData& d, double ts) {

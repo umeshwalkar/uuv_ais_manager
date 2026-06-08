@@ -6,6 +6,26 @@
 
 using json = nlohmann::json;
 
+// ── MqttTopics lookup ─────────────────────────────────────────────────────────
+
+const MqttPubTopic* MqttTopics::findPub(const std::string& n) const {
+    for (const auto& p : pub) if (p.name == n) return &p;
+    return nullptr;
+}
+
+const MqttSubTopic* MqttTopics::findSub(const std::string& n) const {
+    for (const auto& s : sub) if (s.name == n) return &s;
+    return nullptr;
+}
+
+// 0 = publishing OFF; 1–999 = clamp to 1000; >=1000 = keep as-is
+static void normalizePubIntervals(AppConfig& cfg) {
+    for (auto& p : cfg.mqtt.topics.pub) {
+        if (p.publish_interval_ms > 0 && p.publish_interval_ms < 1000)
+            p.publish_interval_ms = 1000;
+    }
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 static TransportDef parseTransportDef(const json& t) {
@@ -108,9 +128,25 @@ AppConfig AppConfig::fromJsonFile(const std::string& path) {
         if (m.contains("retain"))    cfg.mqtt.retain    = m["retain"];
         if (m.contains("topics")) {
             auto& t = m["topics"];
-            if (t.contains("ais"))      cfg.mqtt.topics.ais      = t["ais"];
-            if (t.contains("status"))   cfg.mqtt.topics.status   = t["status"];
-            if (t.contains("gnss_gga")) cfg.mqtt.topics.gnss_gga = t["gnss_gga"];
+            if (t.contains("pub") && t["pub"].is_array()) {
+                for (const auto& p : t["pub"]) {
+                    MqttPubTopic pt;
+                    if (p.contains("name"))                pt.name                = p["name"];
+                    if (p.contains("topic"))               pt.topic               = p["topic"];
+                    if (p.contains("debug"))               pt.debug               = p["debug"];
+                    if (p.contains("publish_interval_ms")) pt.publish_interval_ms = p["publish_interval_ms"];
+                    cfg.mqtt.topics.pub.push_back(std::move(pt));
+                }
+            }
+            if (t.contains("sub") && t["sub"].is_array()) {
+                for (const auto& s : t["sub"]) {
+                    MqttSubTopic st;
+                    if (s.contains("name"))  st.name  = s["name"];
+                    if (s.contains("topic")) st.topic = s["topic"];
+                    if (s.contains("debug")) st.debug = s["debug"];
+                    cfg.mqtt.topics.sub.push_back(std::move(st));
+                }
+            }
         }
     }
 
@@ -126,6 +162,18 @@ AppConfig AppConfig::fromJsonFile(const std::string& path) {
             int idx = 1;
             for (auto& d : a["devices"])
                 cfg.ais.devices.push_back(parseDevice(d, idx++));
+        }
+    }
+
+    normalizePubIntervals(cfg);
+
+    // Global debug.enabled forces debug=true on all per-topic and per-channel flags
+    if (cfg.debug.enabled) {
+        for (auto& p : cfg.mqtt.topics.pub) p.debug = true;
+        for (auto& s : cfg.mqtt.topics.sub) s.debug = true;
+        for (auto& d : cfg.ais.devices) {
+            d.aivdm_in.debug = true;
+            d.gga_out.debug  = true;
         }
     }
 
@@ -197,9 +245,12 @@ AppConfig AppConfig::fromIniFile(const std::string& path) {
     cfg.mqtt.keepalive = getI("mqtt","keepalive", cfg.mqtt.keepalive);
     cfg.mqtt.qos       = getI("mqtt","qos",       cfg.mqtt.qos);
     cfg.mqtt.retain    = getB("mqtt","retain",    cfg.mqtt.retain);
-    cfg.mqtt.topics.ais      = get("mqtt.topics","ais",      cfg.mqtt.topics.ais);
-    cfg.mqtt.topics.status   = get("mqtt.topics","status",   cfg.mqtt.topics.status);
-    cfg.mqtt.topics.gnss_gga = get("mqtt.topics","gnss_gga", cfg.mqtt.topics.gnss_gga);
+    // Build pub/sub topic entries from flat INI keys
+    cfg.mqtt.topics.pub.push_back({"ais",         get("mqtt.topics","ais",      "uuv/sensors/ais"), false, 1000});
+    cfg.mqtt.topics.pub.push_back({"status",      get("mqtt.topics","status",   "ais/status"),      false, 5000});
+    cfg.mqtt.topics.pub.push_back({"diagnostics", get("mqtt.topics","diagnostics","ais/diagnostics"),false, 5000});
+    cfg.mqtt.topics.pub.push_back({"errors",      get("mqtt.topics","errors",   "ais/errors"),      false, 1000});
+    cfg.mqtt.topics.sub.push_back({"gnss_gga",    get("mqtt.topics","gnss_gga", "uuv/gnss/gga"),    false});
 
     // AIS global
     cfg.ais.status_interval_sec = getI("ais","status_interval_sec", cfg.ais.status_interval_sec);
@@ -264,6 +315,17 @@ AppConfig AppConfig::fromIniFile(const std::string& path) {
         dev.gga_out.transport.id = get(gout, "id", "");
 
         cfg.ais.devices.push_back(std::move(dev));
+    }
+
+    normalizePubIntervals(cfg);
+
+    if (cfg.debug.enabled) {
+        for (auto& p : cfg.mqtt.topics.pub) p.debug = true;
+        for (auto& s : cfg.mqtt.topics.sub) s.debug = true;
+        for (auto& d : cfg.ais.devices) {
+            d.aivdm_in.debug = true;
+            d.gga_out.debug  = true;
+        }
     }
 
     if (cfg.ais.transports.empty()) throw std::runtime_error("Config: no [ais.transport.*] sections");

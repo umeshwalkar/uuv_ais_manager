@@ -64,6 +64,8 @@ private:
     ResolvedTransport resolveTransport(const std::string& transport_id) const;
 
     void publishLoop();
+    void onMqttMessage(const std::string& topic, const std::string& payload);
+    void publishAisVessels(int device_id);
 
     std::unordered_map<uint32_t, VesselRecord> mergeVessels(
         const std::vector<DeviceSnapshot>& snaps) const;

@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <chrono>
 #include <unordered_map>
+#include <functional>
 #include "Config.hpp"
 #include "Transport.hpp"
 #include "AisParser.hpp"
@@ -83,6 +84,10 @@ public:
     // Push latest GPS GGA sentence; used by the GGA output thread
     void setGga(const std::string& gga_sentence, double ts);
 
+    // Called once per complete !AIVDM message; fires from the rx thread
+    using AivdmCallback = std::function<void(int device_id)>;
+    void setAivdmCallback(AivdmCallback cb);
+
     int                id()             const { return cfg_.id;             }
     const std::string& name()           const { return cfg_.name;           }
     bool               publishEnabled() const { return cfg_.publish_enabled;}
@@ -106,6 +111,8 @@ private:
     mutable std::mutex  gga_mutex_;
     std::string         last_gga_;
     double              last_gga_ts_ = 0.0;
+
+    AivdmCallback       aivdm_cb_;
 
     // Logger module tag (device name, ≤14 chars)
     std::string         mod_;

@@ -1,9 +1,8 @@
 {
   "debug": {
     "enabled": true,
-    "level":   "debug"
+    "level": "debug"
   },
-
   "mqtt": {
     "enabled": true,
     "broker": "host.docker.internal",
@@ -13,96 +12,131 @@
     "qos": 1,
     "retain": false,
     "topics": {
-      "ais":      "uuv/ais",
-      "status":   "ais/status",
-      "gnss_gga": "uuv/gnss/gga"
+      "pub": [
+        {
+          "name": "status",
+          "topic": "ais/status",
+          "debug": true,
+          "publish_interval_ms": 5000
+        },
+        {
+          "name": "ais",
+          "topic": "uuv/sensors/ais",
+          "debug": true,
+          "publish_interval_ms": 1000
+        },
+        {
+          "name": "diagnostics",
+          "topic": "ais/diagnostics",
+          "debug": true,
+          "publish_interval_ms": 5000
+        },
+        {
+          "name": "errors",
+          "topic": "ais/errors",
+          "debug": true,
+          "publish_interval_ms": 1000
+        }
+      ],
+      "sub": [
+        {
+          "name": "gnss_gga",
+          "topic": "uuv/gnss/gga",
+          "debug": true
+        }
+      ]   
     }
   },
-
   "ais": {
-    "status_interval_sec": 10,
-
+    "status_interval_sec": 5,
     "transport": [
       {
-        "id":                  "ch1",
-        "enabled":             true,
-        "type":                "tcp_client",
-        "host":                "host.docker.internal",
-        "port":                4008,
+        "id": "ch1",
+        "enabled": true,
+        "type": "tcp_client",
+        "host": "host.docker.internal",
+        "port": 4008,
         "connect_timeout_sec": 5,
         "reconnect_delay_sec": 3,
-        "read_timeout_ms":     1000,
-        "buffer_size_bytes":   1024
+        "read_timeout_ms": 1000,
+        "buffer_size_bytes": 1024
       },
       {
-        "id":                  "ch2",
-        "enabled":             true,
-        "type":                "tcp_client",
-        "host":                "host.docker.internal",
-        "port":                4009,
+        "id": "ch2",
+        "enabled": true,
+        "type": "tcp_client",
+        "host": "host.docker.internal",
+        "port": 4009,
         "connect_timeout_sec": 5,
         "reconnect_delay_sec": 3,
-        "read_timeout_ms":     1000,
-        "buffer_size_bytes":   1024
+        "read_timeout_ms": 1000,
+        "buffer_size_bytes": 1024
       }
     ],
-
     "devices": [
       {
-        "id":                     1,
-        "name":                   "ais1",
-        "enabled":                true,
-        "sync_timeout_sec":       5.0,
+        "id": 1,
+        "name": "ais1",
+        "enabled": true,
+        "sync_timeout_sec": 5.0,
         "send_init_on_reconnect": false,
-        "init_commands":          [],
-        "publish_enabled":        true,
-        "publish_raw_ais":        false,
-        "publish_interval_ms":    1000,
-        "validate_checksum":      true,
+        "init_commands": [],
+        "publish_enabled": true,
+        "publish_raw_ais": false,
+        "publish_interval_ms": 1000,
+        "validate_checksum": true,
         "input_channels": {
           "aivdm": {
-            "enabled":          true,
-            "debug":            true,
+            "enabled": true,
+            "debug": true,
             "data_timeout_sec": 5.0,
-            "transport": { "id": "ch1" }
+            "transport": {
+              "id": "ch1"
+            }
           }
         },
         "output_channels": {
           "gga": {
-            "enabled":          false,
-            "debug":            true,
+            "enabled": true,
+            "debug": true,
             "send_interval_ms": 1000,
             "data_timeout_sec": 2.0,
-            "transport": { "id": "ch1" }
+            "transport": {
+              "id": "ch1"
+            }
           }
         }
       },
       {
-        "id":                     2,
-        "name":                   "ais2",
-        "enabled":                true,
-        "sync_timeout_sec":       5.0,
+        "id": 2,
+        "name": "ais2",
+        "enabled": true,
+        "sync_timeout_sec": 5.0,
         "send_init_on_reconnect": false,
-        "init_commands":          [],
-        "publish_enabled":        true,
-        "publish_raw_ais":        false,
-        "publish_interval_ms":    1000,
-        "validate_checksum":      true,
+        "init_commands": [],
+        "publish_enabled": true,
+        "publish_raw_ais": false,
+        "publish_interval_ms": 1000,
+        "validate_checksum": true,
         "input_channels": {
           "aivdm": {
-            "enabled":          true,
-            "debug":            true,
+            "enabled": true,
+            "debug": true,
             "data_timeout_sec": 5.0,
-            "transport": { "id": "ch2" }
+            "transport": {
+              "id": "ch2"
+            }
           }
         },
         "output_channels": {
           "gga": {
-            "enabled":          false,
-            "debug":            true,
+            "enabled": true,
+            "debug": true,
             "send_interval_ms": 1000,
             "data_timeout_sec": 2.0,
-            "transport": { "id": "ch2" }
+            "transport": {
+              "id": "ch2"
+            }
           }
         }
       }
