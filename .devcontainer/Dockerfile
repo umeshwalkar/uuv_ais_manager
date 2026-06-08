@@ -13,7 +13,8 @@ RUN apt-get update && apt-get install -y \
     # ── app dependencies (match the production Dockerfile) ──
     libmosquitto-dev \
     libmosquitto1 \
-    libjsoncpp-dev \
+    # libjsoncpp-dev \
+    nlohmann-json3-dev \
     # ── handy for testing the pipeline from inside the container ──
     mosquitto \
     mosquitto-clients \
