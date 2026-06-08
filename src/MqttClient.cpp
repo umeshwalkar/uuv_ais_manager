@@ -3,7 +3,7 @@
 #include <mosquitto.h>
 #include <stdexcept>
 
-#define MOD "MqttClient"
+#define MOD "AisMqttClient"
 
 // One-time library init/cleanup tied to static storage duration.
 namespace {

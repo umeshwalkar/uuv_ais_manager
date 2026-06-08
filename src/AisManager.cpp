@@ -17,19 +17,6 @@ double AisManager::epochNow() {
     ).count();
 }
 
-static TransportConfig toTransportConfig(const TransportDef& d) {
-    TransportConfig c;
-    c.type = d.type; c.bind_host = d.bind_host; c.bind_port = d.bind_port;
-    c.host = d.host; c.port = d.port;
-    c.serial_port = d.serial_port; c.serial_baud = d.serial_baud;
-    c.serial_data_bits = d.serial_data_bits; c.serial_stop_bits = d.serial_stop_bits;
-    c.serial_parity = d.serial_parity;
-    c.connect_timeout_sec = d.connect_timeout_sec;
-    c.reconnect_delay_sec = d.reconnect_delay_sec;
-    c.read_timeout_ms = d.read_timeout_ms;
-    c.buffer_size_bytes = d.buffer_size_bytes;
-    return c;
-}
 
 // Build one vessel JSON object
 static json vesselJson(const VesselRecord& rec, double age,
@@ -88,7 +75,7 @@ void AisManager::buildTransportPool() {
     LOG_INF(MOD, "Transport pool — %zu entries", cfg_.ais.transports.size());
     for (const auto& td : cfg_.ais.transports) {
         try {
-            pool_[td.id] = makeTransport(toTransportConfig(td));
+            pool_[td.id] = makeTransport(td);
             if (td.enabled) {
                 LOG_INF(MOD, "  [%s] type=%s %s%s",
                         td.id.c_str(), td.type.c_str(),

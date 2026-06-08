@@ -5,7 +5,7 @@
 #include "Logger.hpp"
 #include "AisManager.hpp"
 
-#define MOD "Main"
+#define MOD "AisMain"
 
 static std::atomic<bool>  g_running{true};
 static AisManager*        g_manager = nullptr;

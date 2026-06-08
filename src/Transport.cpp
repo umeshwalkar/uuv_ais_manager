@@ -49,7 +49,7 @@ static void splitIntoLines(const char* buf, ssize_t n, std::deque<std::string>& 
 
 // ── UdpServerTransport ────────────────────────────────────────────────────────
 
-UdpServerTransport::UdpServerTransport(const TransportConfig& cfg) : cfg_(cfg) {}
+UdpServerTransport::UdpServerTransport(const TransportDef& cfg) : cfg_(cfg) {}
 
 UdpServerTransport::~UdpServerTransport() { close(); }
 
@@ -95,9 +95,11 @@ std::string UdpServerTransport::readLine(int timeout_ms) {
     auto line = buf_.front(); buf_.pop_front(); return line;
 }
 
+bool UdpServerTransport::send(const std::string&) { return false; }
+
 // ── TcpClientTransport ────────────────────────────────────────────────────────
 
-TcpClientTransport::TcpClientTransport(const TransportConfig& cfg) : cfg_(cfg) {}
+TcpClientTransport::TcpClientTransport(const TransportDef& cfg) : cfg_(cfg) {}
 
 TcpClientTransport::~TcpClientTransport() { close(); }
 
@@ -178,9 +180,15 @@ std::string TcpClientTransport::readLine(int timeout_ms) {
     return line;
 }
 
+bool TcpClientTransport::send(const std::string& data) {
+    if (fd_ < 0) return false;
+    ssize_t n = ::send(fd_, data.data(), data.size(), MSG_NOSIGNAL);
+    return n == static_cast<ssize_t>(data.size());
+}
+
 // ── TcpServerTransport ────────────────────────────────────────────────────────
 
-TcpServerTransport::TcpServerTransport(const TransportConfig& cfg) : cfg_(cfg) {}
+TcpServerTransport::TcpServerTransport(const TransportDef& cfg) : cfg_(cfg) {}
 
 TcpServerTransport::~TcpServerTransport() { close(); }
 
@@ -252,9 +260,19 @@ std::string TcpServerTransport::readLine(int timeout_ms) {
     return line;
 }
 
+bool TcpServerTransport::send(const std::string& data) {
+    if (client_fd_ < 0) return false;
+    ssize_t n = ::send(client_fd_, data.data(), data.size(), MSG_NOSIGNAL);
+    if (n != static_cast<ssize_t>(data.size())) {
+        ::close(client_fd_); client_fd_ = -1;
+        return false;
+    }
+    return true;
+}
+
 // ── factory ───────────────────────────────────────────────────────────────────
 
-std::unique_ptr<ITransport> makeTransport(const TransportConfig& cfg) {
+std::unique_ptr<ITransport> makeTransport(const TransportDef& cfg) {
     if (cfg.type == "udp_server")
         return std::make_unique<UdpServerTransport>(cfg);
     if (cfg.type == "tcp_client")
