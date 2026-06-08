@@ -19,7 +19,11 @@ RUN apt-get update && apt-get install -y \
     mosquitto \
     mosquitto-clients \
     iproute2 \
-    && rm -rf /var/lib/apt/lists/*
+    # ── Python (required by tests/ and test_ais.py simulator) ──
+    # python3 \
+    # python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir --break-system-packages paho-mqtt pytest
 
 # Tip: start a local broker for testing with `mosquitto -v &`
 # then watch topics with `mosquitto_sub -t 'uuv/#' -v`.
